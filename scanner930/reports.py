@@ -123,9 +123,9 @@ def export_reports(database_path: Path, output_dir: Path) -> None:
     dashboard.append([])
     dashboard.append(["Report", "Purpose"])
     dashboard.append(
-        ["TradeBook", "Trigger/C2 entries, TP1, runner exits and realized P&L"]
+        ["TradeBook", "G2/G3 entries, TP1, runner exits and realized P&L"]
     )
-    dashboard.append(["SetupLedger", "Each counted C1 setup and C2 outcome"])
+    dashboard.append(["SetupLedger", "Each G1/G2/G3 setup and outcome"])
     dashboard.append(["OrderBook", "Paper/live broker-order audit trail"])
     dashboard.append(["LiveEvents", "Full chronological strategy event log"])
     dashboard.append(["CompletedCandles", "All completed 1m/3m OHLCV and 3m VWAP"])

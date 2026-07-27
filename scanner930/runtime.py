@@ -101,29 +101,11 @@ class StockRuntime:
         if self.should_record():
             self.store.save_candle(candle)
         self.strategy.on_three_minute(candle)
-        position = self.strategy.position
-        if (
-            position is not None
-            and position.open_quantity > 0
-            and position.entry_mode == "TRIGGER_HIGH_BREAK"
-            and not position.awaiting_c1_close
-            and position.c1_low is not None
-            and self.strategy.setup is not None
-            and self.strategy.setup.c1 is not None
-            and self.strategy.setup.c1.start == candle.start
-        ):
-            if self.should_record():
-                self.store.update_trade_target(position)
-            if position.tp1_due_at_c1_close and not position.tp1_booked:
-                self._book_tp1(
-                    candle.completion_time,
-                    candle.close,
-                    "TP1_C1_CLOSE",
-                )
 
     def _on_one_minute(self, candle) -> None:
         if self.should_record():
             self.store.save_candle(candle)
+        self.strategy.on_one_minute(candle)
         position = self.strategy.position
         if position is None or position.open_quantity <= 0:
             return
@@ -264,14 +246,13 @@ class StockRuntime:
         if event_type in {
             "TRIGGER_VALID",
             "TRIGGER_REJECTED_FIRST_RED",
-            "C1_VALID",
+            "G1_VALID",
+            "G2_EQUAL_G1_HIGH",
             "SETUP_FAILED",
             "ENTRY_SIGNAL",
             "TP1_TOUCHED",
             "TP1_EXECUTED",
-            "C1_FINALIZED_EARLY_ENTRY",
-            "TP1_REACHED_IN_C1",
-            "TRAIL_RAISED",
+            "TRAIL_RAISED_RED_3M",
             "POSITION_CLOSED",
         }:
             print(

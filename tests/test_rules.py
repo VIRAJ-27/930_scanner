@@ -10,19 +10,16 @@ from scanner930.strategy import ScannerStrategy
 IST = ZoneInfo("Asia/Kolkata")
 
 
-def moment(hhmm: str) -> datetime:
-    return datetime.fromisoformat(f"2026-07-27T{hhmm}:00").replace(tzinfo=IST)
+def moment(hhmmss: str) -> datetime:
+    return datetime.fromisoformat(f"2026-07-27T{hhmmss}").replace(tzinfo=IST)
 
 
-def candle(
-    hhmm: str,
-    open_: float,
-    high: float,
-    low: float,
-    close: float,
-    vwap: float,
-) -> Candle:
-    return Candle("TEST", 3, moment(hhmm), open_, high, low, close, 100, vwap)
+def c3(hhmm: str, open_: float, high: float, low: float, close: float, vwap: float):
+    return Candle("TEST", 3, moment(f"{hhmm}:00"), open_, high, low, close, 100, vwap)
+
+
+def c1(hhmm: str, open_: float, high: float, low: float, close: float):
+    return Candle("TEST", 1, moment(f"{hhmm}:00"), open_, high, low, close, 100)
 
 
 class StrategyRuleTests(unittest.TestCase):
@@ -35,132 +32,110 @@ class StrategyRuleTests(unittest.TestCase):
             ),
         )
 
-    def valid_setup(self, trigger_time="09:30", c1_time="09:33"):
-        self.strategy.on_three_minute(candle("09:27", 100, 103, 99, 102, 101))
+    def valid_trigger(self, trigger_time="09:30"):
+        previous_time = {"09:30": "09:27", "09:33": "09:30", "09:36": "09:33"}[
+            trigger_time
+        ]
+        self.strategy.on_three_minute(c3(previous_time, 100, 103, 99, 102, 101))
         self.strategy.on_three_minute(
-            candle(trigger_time, 103, 104, 101, 102, 101.5)
-        )
-        self.strategy.on_three_minute(
-            candle(c1_time, 102, 105, 101, 104, 102)
+            c3(trigger_time, 103, 104, 101, 102, 101.5)
         )
 
-    def test_trigger_c1_and_strict_c2_high_break_enter(self):
-        self.valid_setup()
-        self.assertEqual(self.strategy.attempts, 1)
-        self.assertIsNone(self.strategy.on_entry_tick(moment("09:36"), 105.0))
-        position = self.strategy.on_entry_tick(
-            moment("09:36").replace(second=1),
-            105.05,
-        )
-        self.assertIsNotNone(position)
-        self.assertEqual(position.initial_sl, 101)
-        self.assertAlmostEqual(position.tp1_target, 111.125)
-        self.assertEqual(position.open_quantity, 100)
-        self.assertEqual(position.entry_mode, "C1_HIGH_BREAK")
+    def test_first_red_of_first_three_can_be_trigger(self):
+        self.strategy.on_three_minute(c3("09:27", 100, 103, 99, 102, 101))
+        self.strategy.on_three_minute(c3("09:30", 101, 104, 100, 103, 101))
+        self.strategy.on_three_minute(c3("09:33", 104, 105, 102, 103, 102))
+        self.assertEqual(self.strategy.state, "WAIT_G1")
 
-    def test_trigger_high_break_enters_before_c1_close(self):
-        self.strategy.on_three_minute(candle("09:27", 100, 103, 99, 102, 101))
-        self.strategy.on_three_minute(candle("09:30", 103, 104, 101, 102, 101.5))
-        position = self.strategy.on_entry_tick(
-            moment("09:33").replace(second=1),
-            104.05,
-        )
-        self.assertIsNotNone(position)
-        self.assertEqual(position.initial_sl, 101)
-        self.assertIsNone(position.tp1_target)
-        self.assertTrue(position.awaiting_c1_close)
-        self.strategy.on_three_minute(
-            candle("09:33", 102, 106, 103, 105, 102)
-        )
-        self.assertEqual(position.current_sl, 103)
-        self.assertAlmostEqual(position.tp1_target, 105.625)
-        self.assertTrue(position.tp1_due_at_c1_close)
-
-    def test_c2_low_break_first_consumes_attempt(self):
-        self.valid_setup()
-        position = self.strategy.on_entry_tick(
-            moment("09:36").replace(second=1),
-            100.99,
-        )
-        self.assertIsNone(position)
-        self.assertEqual(self.strategy.attempts, 1)
+    def test_no_red_by_0936_discards_day(self):
+        self.strategy.on_three_minute(c3("09:27", 100, 103, 99, 102, 101))
+        self.strategy.on_three_minute(c3("09:30", 101, 104, 100, 103, 101))
+        self.strategy.on_three_minute(c3("09:33", 102, 105, 101, 104, 102))
+        self.strategy.on_three_minute(c3("09:36", 103, 106, 102, 105, 103))
         self.assertEqual(self.strategy.state, "DONE")
-        self.assertEqual(self.events[-1][1]["outcome"], "C2_BROKE_C1_LOW_FIRST")
+        self.assertEqual(self.events[-1][1]["outcome"], "NO_RED_TRIGGER_IN_FIRST_THREE")
 
-    def test_c2_close_without_entry_consumes_attempt(self):
-        self.valid_setup()
-        self.strategy.on_three_minute(candle("09:36", 104, 105, 102, 104.5, 102))
-        self.assertEqual(self.strategy.attempts, 1)
-        self.assertEqual(self.strategy.state, "DONE")
-        self.assertEqual(self.events[-1][1]["outcome"], "C2_NO_C1_HIGH_BREAK")
-
-    def test_invalid_c1_does_not_count(self):
-        self.strategy.on_three_minute(candle("09:27", 100, 103, 99, 102, 101))
-        self.strategy.on_three_minute(candle("09:30", 103, 104, 101, 102, 101.5))
-        self.strategy.on_three_minute(candle("09:33", 102, 103, 100, 101, 101))
-        self.assertEqual(self.strategy.attempts, 0)
-        self.assertEqual(self.strategy.state, "DONE")
-
-    def test_0951_trigger_can_enter_later(self):
-        self.strategy.on_three_minute(candle("09:48", 100, 103, 99, 102, 101))
-        self.strategy.on_three_minute(candle("09:51", 103, 104, 101, 102, 101.5))
-        self.strategy.on_three_minute(candle("09:54", 102, 105, 101, 104, 102))
-        position = self.strategy.on_entry_tick(
-            moment("09:57").replace(second=1),
-            105.1,
-        )
-        self.assertIsNotNone(position)
-
-    def test_trigger_close_must_be_inside_previous_range(self):
-        self.strategy.on_three_minute(candle("09:27", 100, 101.5, 99, 101, 100))
-        self.strategy.on_three_minute(candle("09:30", 103, 104, 102, 102.5, 101))
+    def test_first_red_failure_discards_day(self):
+        self.strategy.on_three_minute(c3("09:27", 100, 103, 99, 102, 101))
+        self.strategy.on_three_minute(c3("09:30", 103, 104, 101, 102, 102.5))
         self.assertEqual(self.strategy.state, "DONE")
         self.assertEqual(self.events[-1][0], "TRIGGER_REJECTED_FIRST_RED")
 
-    def test_first_red_failure_discards_stock_for_day(self):
-        self.strategy.on_three_minute(candle("09:27", 100, 103, 99, 102, 101))
-        self.strategy.on_three_minute(candle("09:30", 103, 104, 101, 102, 102.5))
-        self.assertEqual(self.strategy.state, "DONE")
-        self.strategy.on_three_minute(candle("09:33", 101, 104, 100, 103, 102))
-        self.strategy.on_three_minute(candle("09:36", 104, 105, 102, 103, 102.5))
-        self.assertEqual(self.strategy.state, "DONE")
-        self.assertIsNone(self.strategy.setup)
+    def test_g1_range_equal_020_percent_is_valid(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.0, 102.204, 102.0, 102.1))
+        self.assertEqual(self.strategy.state, "WAIT_G2")
+        self.assertEqual(self.events[-1][0], "G1_VALID")
 
-    def test_green_candles_are_skipped_until_first_red_candidate(self):
-        self.strategy.on_three_minute(candle("09:27", 99, 102, 98, 101, 100))
-        self.strategy.on_three_minute(candle("09:30", 101, 104, 100, 103, 101))
-        self.assertEqual(self.strategy.state, "SEARCH_TRIGGER")
-        self.strategy.on_three_minute(candle("09:33", 104, 105, 102, 103, 102))
-        self.assertEqual(self.strategy.state, "WAIT_C1")
+    def test_g1_range_above_020_percent_discards(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.0, 102.205, 102.0, 102.1))
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(self.events[-1][1]["outcome"], "G1_RANGE_ABOVE_0_20_PERCENT")
+
+    def test_first_green_within_four_minutes_becomes_g1(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.1, 102.15, 102.0, 102.05))
+        self.strategy.on_one_minute(c1("09:34", 102.05, 102.15, 102.0, 102.1))
+        self.assertEqual(self.strategy.setup.g1.start, moment("09:34:00"))
+
+    def test_g2_strict_break_enters_at_tick(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.0, 102.2, 102.0, 102.1))
+        position = self.strategy.on_entry_tick(moment("09:34:20"), 102.21)
+        self.assertIsNotNone(position)
+        self.assertEqual(position.entry_mode, "G2_G1_HIGH_BREAK")
+        self.assertEqual(position.initial_sl, 102.0)
+        self.assertAlmostEqual(position.tp1_target, 102.672)
+
+    def test_g2_equal_then_g3_strict_break_enters(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.0, 102.2, 102.0, 102.1))
+        self.strategy.on_one_minute(c1("09:34", 102.1, 102.2, 102.05, 102.15))
+        self.assertEqual(self.strategy.state, "WAIT_G3")
+        position = self.strategy.on_entry_tick(moment("09:35:10"), 102.21)
+        self.assertIsNotNone(position)
+        self.assertEqual(position.entry_mode, "G3_G1_HIGH_BREAK")
+
+    def test_g2_below_g1_high_discards(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.0, 102.2, 102.0, 102.1))
+        self.strategy.on_one_minute(c1("09:34", 102.1, 102.19, 102.05, 102.15))
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(self.events[-1][1]["outcome"], "G2_DID_NOT_REACH_G1_HIGH")
+
+    def test_g2_break_of_g1_low_discards(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.0, 102.2, 102.0, 102.1))
+        self.strategy.on_entry_tick(moment("09:34:10"), 101.99)
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(self.events[-1][1]["outcome"], "WAIT_G2_BROKE_G1_LOW")
+
+    def test_trigger_low_break_in_guide_window_discards(self):
+        self.valid_trigger()
+        self.strategy.on_entry_tick(moment("09:33:10"), 100.99)
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(self.events[-1][1]["outcome"], "GUIDE_BROKE_TRIGGER_LOW")
+
+    def test_only_red_three_minute_candle_raises_runner_trail(self):
+        self.valid_trigger()
+        self.strategy.on_one_minute(c1("09:33", 102.0, 102.2, 102.0, 102.1))
+        position = self.strategy.on_entry_tick(moment("09:34:10"), 102.21)
+        self.strategy.mark_tp1_booked(moment("09:40:00"), position.tp1_target)
+        self.assertEqual(position.current_sl, position.entry_price)
+        self.strategy.on_three_minute(c3("09:39", 103, 104, 102.3, 103.5, 102))
+        self.assertEqual(position.current_sl, position.entry_price)
+        self.strategy.on_three_minute(c3("09:42", 104, 105, 103, 103.5, 102))
+        self.assertEqual(position.current_sl, 103)
 
     def test_standard_hlc3_session_vwap(self):
         calculator = SessionVwap()
-        first = Candle("TEST", 3, moment("09:15"), 9, 12, 6, 9, 100)
-        second = Candle("TEST", 3, moment("09:18"), 10, 15, 9, 12, 200)
+        first = Candle("TEST", 3, moment("09:15:00"), 9, 12, 6, 9, 100)
+        second = Candle("TEST", 3, moment("09:18:00"), 10, 15, 9, 12, 200)
         calculator.apply(first)
         calculator.apply(second)
         expected = (((12 + 6 + 9) / 3) * 100 + ((15 + 9 + 12) / 3) * 200) / 300
         self.assertAlmostEqual(second.vwap, expected)
-
-    def test_one_counted_failure_ends_stock_for_day(self):
-        self.valid_setup()
-        self.strategy.on_three_minute(candle("09:36", 103, 104, 102, 103.5, 102))
-        self.assertEqual(self.strategy.attempts, 1)
-        self.assertEqual(self.strategy.state, "DONE")
-
-    def test_tp1_touch_prevents_another_setup_even_if_trade_closes(self):
-        self.valid_setup()
-        position = self.strategy.on_entry_tick(
-            moment("09:36").replace(second=1),
-            105.1,
-        )
-        self.strategy.tp1_ever_hit = True
-        self.strategy.mark_closed(
-            moment("09:37").replace(second=1),
-            position.initial_sl,
-            "INITIAL_SL",
-        )
-        self.assertEqual(self.strategy.state, "DONE")
 
 
 if __name__ == "__main__":

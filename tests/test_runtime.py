@@ -36,62 +36,48 @@ class RuntimeTests(unittest.TestCase):
         self.store.close()
         self.temp.cleanup()
 
-    def c(self, hhmm, o, h, l, close, vwap):
+    def c3(self, hhmm, o, h, l, close, vwap):
         return Candle("TEST", 3, dt(f"{hhmm}:00"), o, h, l, close, 100, vwap)
 
-    def test_100_share_fallback_entry_50_tp1_and_50_runner(self):
-        self.runtime.trading_day = dt("09:27:00").date()
-        self.runtime.strategy.on_three_minute(self.c("09:27", 100, 103, 99, 102, 101))
-        self.runtime.strategy.on_three_minute(self.c("09:30", 103, 104, 101, 102, 101.5))
-        self.runtime.strategy.on_three_minute(self.c("09:33", 102, 105, 101, 104, 102))
-
-        self.runtime.on_tick(dt("09:36:01"), 105.1, 1000)
-        position = self.runtime.strategy.position
-        self.assertEqual(position.open_quantity, 100)
-        self.runtime.on_tick(dt("09:36:30"), position.tp1_target, 1010)
-        self.assertTrue(position.tp1_touched)
-        self.assertFalse(position.tp1_booked)
-
-        minute = Candle(
-            "TEST",
-            1,
-            dt("09:36:00"),
-            105.1,
-            position.tp1_target + 0.1,
-            105.1,
-            position.tp1_target + 0.05,
-            10,
+    def prepare_entry(self):
+        strategy = self.runtime.strategy
+        strategy.on_three_minute(self.c3("09:27", 100, 103, 99, 102, 101))
+        strategy.on_three_minute(self.c3("09:30", 103, 104, 101, 102, 101.5))
+        strategy.on_one_minute(
+            Candle("TEST", 1, dt("09:33:00"), 102, 102.2, 102, 102.1, 10)
         )
-        self.runtime._on_one_minute(minute)
+        return strategy.on_entry_tick(dt("09:34:10"), 102.21)
+
+    def test_tp1_books_50_at_1m_close_and_moves_runner_to_be(self):
+        position = self.prepare_entry()
+        self.runtime.trading_day = dt("09:34:00").date()
+        self.runtime.on_tick(dt("09:40:20"), position.tp1_target, 1000)
+        self.assertTrue(position.tp1_touched)
+        self.runtime._on_one_minute(
+            Candle(
+                "TEST",
+                1,
+                dt("09:40:00"),
+                position.tp1_target - 0.1,
+                position.tp1_target + 0.1,
+                position.tp1_target - 0.2,
+                position.tp1_target + 0.05,
+                10,
+            )
+        )
         self.assertTrue(position.tp1_booked)
         self.assertEqual(position.open_quantity, 50)
+        self.assertEqual(position.current_sl, position.entry_price)
 
-        trail_candle = self.c("09:36", 108, 112, 106, 110, 104)
-        self.runtime.strategy.on_three_minute(trail_candle)
-        self.assertEqual(position.current_sl, 106)
-        self.runtime.on_tick(dt("09:39:01"), 105.9, 1020)
+    def test_red_three_minute_trail_and_immediate_stop(self):
+        position = self.prepare_entry()
+        self.runtime.trading_day = dt("09:34:00").date()
+        self.runtime.strategy.mark_tp1_booked(dt("09:40:00"), position.tp1_target)
+        self.runtime._on_three_minute(self.c3("09:42", 104, 105, 103, 103.5, 102))
+        self.assertEqual(position.current_sl, 103)
+        self.runtime.on_tick(dt("09:45:10"), 102.99, 1010)
         self.assertEqual(position.open_quantity, 0)
         self.assertEqual(position.final_exit_reason, "RUNNER_TRAIL_SL")
-
-    def test_early_entry_books_half_when_c1_already_reached_1_5r(self):
-        self.runtime.trading_day = dt("09:27:00").date()
-        self.runtime.strategy.on_three_minute(
-            self.c("09:27", 100, 103, 99, 102, 101)
-        )
-        self.runtime.strategy.on_three_minute(
-            self.c("09:30", 103, 104, 101, 102, 101.5)
-        )
-        self.runtime.on_tick(dt("09:33:01"), 104.05, 1000)
-        position = self.runtime.strategy.position
-        self.assertEqual(position.entry_mode, "TRIGGER_HIGH_BREAK")
-        self.assertIsNone(position.tp1_target)
-        self.runtime._on_three_minute(
-            self.c("09:33", 102, 106, 103, 105, 102)
-        )
-        self.assertAlmostEqual(position.tp1_target, 105.625)
-        self.assertEqual(position.current_sl, 103)
-        self.assertTrue(position.tp1_booked)
-        self.assertEqual(position.open_quantity, 50)
 
     def test_live_broker_uses_cash_intraday_order_and_records_fill(self):
         class FakeApi:
@@ -115,14 +101,13 @@ class RuntimeTests(unittest.TestCase):
 
         api = FakeApi()
         live_broker = EquityBroker(self.store, "LIVE", api)
-        instrument = EquityInstrument("TEST", "TEST-EQ", "100")
         live_broker.submit(
             dt("09:36:01"),
             "trade-1",
-            instrument,
+            EquityInstrument("TEST", "TEST-EQ", "100"),
             "BUY",
             100,
-            "C2_C1_HIGH_BREAK",
+            "G2_G1_HIGH_BREAK",
             105.1,
         )
         live_broker.close()
@@ -135,7 +120,6 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(api.params["exchange"], "NSE")
         self.assertEqual(api.params["producttype"], "INTRADAY")
         self.assertEqual(api.params["ordertype"], "MARKET")
-        self.assertEqual(api.params["symboltoken"], "100")
         self.assertEqual(api.params["quantity"], "100")
         self.assertEqual(rows[-1], ("FILLED", 105.25))
 

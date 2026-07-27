@@ -54,7 +54,7 @@ def main() -> None:
     events.to_csv(args.output / "SetupAudit.csv", index=False)
     setup_report = events[
         events["EventType"].isin(
-            ["C1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"]
+            ["G1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"]
         )
     ].copy()
     setup_report.to_csv(args.output / "SetupReport.csv", index=False)
@@ -84,32 +84,35 @@ def main() -> None:
             ("VWAP reset", "Every trading session at 09:15 IST"),
             (
                 "Trigger",
-                "First red 3m candle from 09:30-09:51 is the only candidate; "
+                "First red 3m candle among 09:30, 09:33 and 09:36 is the only candidate; "
                 "must close above VWAP and inside previous green 3m range, "
                 "otherwise discard stock for the day",
             ),
             (
-                "Early entry",
-                "During next 3m candle, strict Trigger-high break buys 100 "
-                "shares with Trigger low as initial SL",
+                "Guide window",
+                "Only the next four completed 1m candles after Trigger are checked",
             ),
             (
-                "C1 close",
-                "Move SL up to C1 low; calculate standard 1.5R from entry "
-                "to C1 low",
+                "G1",
+                "First green 1m candle in the guide window; range "
+                "(High-Low)/Low must be <=0.20%",
             ),
             (
-                "Fallback",
-                "If Trigger high did not break, require valid C1 and use normal "
-                "C2 strict C1-high breakout entry",
+                "Entry",
+                "G2 must strictly break G1 high, or equal it and allow G3 "
+                "one strict-break opportunity; G2 below G1 high discards",
             ),
             (
                 "TP1",
-                "1.5R; sell 50 shares at target-touch 1m close, or at C1 close "
-                "when C1 already reached the final target",
+                "2.2R from entry to G1 low; sell 50 shares at target-touch "
+                "1m candle close",
             ),
-            ("Runner", "50 shares; monotonic prior completed 3m low after TP1"),
-            ("Maximum setups", "One counted valid-C1 setup per stock/day"),
+            (
+                "Runner",
+                "50 shares; move SL to entry after TP1, then use monotonic "
+                "completed red 3m candle lows",
+            ),
+            ("Maximum setups", "One setup per stock/day"),
             ("Market exit", "15:15 IST"),
             ("Costs", "Brokerage, taxes, fees and slippage excluded"),
         ],
@@ -130,8 +133,13 @@ def main() -> None:
         "Losers": int((pnl < 0).sum()),
         "NetPnL": round(float(pnl.sum()), 2),
         "AveragePnL": round(float(pnl.mean()), 2) if len(pnl) else 0.0,
-        "AverageR": (
-            round(float(trades["RMultiple"].mean()), 4)
+        "NetRR": (
+            round(float(trades["NetRR"].sum()), 4)
+            if not trades.empty
+            else 0.0
+        ),
+        "AverageRR": (
+            round(float(trades["NetRR"].mean()), 4)
             if not trades.empty
             else 0.0
         ),
@@ -140,13 +148,13 @@ def main() -> None:
             if not trades.empty
             else 0
         ),
-        "EarlyEntryTrades": (
-            int((trades["EntryMode"] == "TRIGGER_HIGH_BREAK").sum())
+        "G2EntryTrades": (
+            int((trades["EntryMode"] == "G2_G1_HIGH_BREAK").sum())
             if not trades.empty
             else 0
         ),
-        "FallbackEntryTrades": (
-            int((trades["EntryMode"] == "C1_HIGH_BREAK").sum())
+        "G3EntryTrades": (
+            int((trades["EntryMode"] == "G3_G1_HIGH_BREAK").sum())
             if not trades.empty
             else 0
         ),

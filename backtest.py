@@ -2,24 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from scanner930.config import QUANTITY, RUNNER_QUANTITY, TP1_QUANTITY
 from scanner930.models import Candle
 from scanner930.strategy import ScannerStrategy
-from scanner930.config import (
-    QUANTITY,
-    RUNNER_QUANTITY,
-    TP1_QUANTITY,
-)
 
 
 TICK_SIZE = 0.05
 MARKET_EXIT = time(15, 15)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backtest the 9:30 scanner.")
     parser.add_argument("--base-data", type=Path, required=True)
@@ -39,10 +36,9 @@ def load_symbol(
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> pd.DataFrame:
-    safe = safe_name(symbol)
-    paths = [base_data / f"{safe}_1m.csv"]
+    paths = [base_data / f"{safe_name(symbol)}_1m.csv"]
     if supplement:
-        paths.append(supplement / f"{safe}_1m.csv")
+        paths.append(supplement / f"{safe_name(symbol)}_1m.csv")
     frames = []
     for path in paths:
         if not path.exists():
@@ -51,21 +47,21 @@ def load_symbol(
             path,
             usecols=["Datetime", "Open", "High", "Low", "Close", "Volume"],
         )
-        if frame.empty:
-            continue
-        frame["Datetime"] = pd.to_datetime(frame["Datetime"], utc=True)
-        frames.append(frame)
+        if not frame.empty:
+            frame["Datetime"] = pd.to_datetime(frame["Datetime"], utc=True)
+            frames.append(frame)
     if not frames:
         return pd.DataFrame()
-    result = pd.concat(frames, ignore_index=True)
     result = (
-        result.sort_values("Datetime")
+        pd.concat(frames, ignore_index=True)
+        .sort_values("Datetime")
         .drop_duplicates("Datetime", keep="last")
         .reset_index(drop=True)
     )
     result["Datetime"] = result["Datetime"].dt.tz_convert("Asia/Kolkata")
-    mask = (result["Datetime"] >= start) & (result["Datetime"] <= end)
-    result = result.loc[mask].copy()
+    result = result[
+        (result["Datetime"] >= start) & (result["Datetime"] <= end)
+    ].copy()
     for column in ["Open", "High", "Low", "Close", "Volume"]:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     return result.dropna(subset=["Open", "High", "Low", "Close"])
@@ -89,26 +85,30 @@ def make_three_minute(frame: pd.DataFrame) -> pd.DataFrame:
         .rename(columns={"Bucket": "Datetime"})
     )
     typical = (result["High"] + result["Low"] + result["Close"]) / 3.0
-    trading_dates = result["Datetime"].dt.date
-    cumulative_volume = result["Volume"].groupby(trading_dates).cumsum()
-    cumulative_pv = (typical * result["Volume"]).groupby(trading_dates).cumsum()
+    dates = result["Datetime"].dt.date
+    cumulative_volume = result["Volume"].groupby(dates).cumsum()
+    cumulative_pv = (typical * result["Volume"]).groupby(dates).cumsum()
     result["VWAP"] = cumulative_pv / cumulative_volume
     result.loc[cumulative_volume <= 0, "VWAP"] = float("nan")
     result["Completion"] = result["Datetime"] + pd.Timedelta(minutes=3)
     return result
 
 
-def row_to_candle(symbol: str, row: Any) -> Candle:
+def row_to_candle(symbol: str, row: Any, minutes: int) -> Candle:
     return Candle(
         symbol=symbol,
-        minutes=3,
+        minutes=minutes,
         start=row.Datetime.to_pydatetime(),
         open=float(row.Open),
         high=float(row.High),
         low=float(row.Low),
         close=float(row.Close),
         volume=int(row.Volume),
-        vwap=None if pd.isna(row.VWAP) else float(row.VWAP),
+        vwap=(
+            None
+            if not hasattr(row, "VWAP") or pd.isna(row.VWAP)
+            else float(row.VWAP)
+        ),
     )
 
 
@@ -136,177 +136,111 @@ def backtest_day(
         )
 
     strategy = ScannerStrategy(symbol, emit)
-    three = (
-        three_frame
-        if three_frame is not None
-        else make_three_minute(minute_frame)
-    )
+    three = three_frame if three_frame is not None else make_three_minute(minute_frame)
     three_by_end = {
-        row.Completion.to_pydatetime(): row
-        for row in three.itertuples(index=False)
+        row.Completion.to_pydatetime(): row for row in three.itertuples(index=False)
     }
     processed: set[datetime] = set()
     trades: list[dict[str, Any]] = []
     active: dict[str, Any] | None = None
 
-    def process_completion(moment: datetime) -> Any | None:
-        if moment in processed:
-            return None
-        row = three_by_end.get(moment)
-        if row is None:
-            return None
-        strategy.on_three_minute(row_to_candle(symbol, row))
-        processed.add(moment)
-        return row
-
     for minute in minute_frame.itertuples(index=False):
         timestamp = minute.Datetime.to_pydatetime()
         minute_end = timestamp + timedelta(minutes=1)
-        completed_row = process_completion(timestamp)
+
+        completed = three_by_end.get(timestamp)
+        if completed is not None and timestamp not in processed:
+            strategy.on_three_minute(row_to_candle(symbol, completed, 3))
+            processed.add(timestamp)
 
         position = strategy.position
-        if (
-            completed_row is not None
-            and position is not None
-            and active is not None
-            and position.entry_mode == "TRIGGER_HIGH_BREAK"
-            and position.c1_low is not None
-            and not active.get("C1Time")
-        ):
-            c1 = row_to_candle(symbol, completed_row)
-            active.update(candle_fields("C1", c1))
-            active["PostC1SL"] = position.current_sl
-            active["RiskPerShare"] = position.entry_price - position.c1_low
-            active["TP1Target"] = position.tp1_target
-            if position.tp1_due_at_c1_close and not position.tp1_booked:
-                book_tp1_at_c1_close(
-                    strategy,
-                    active,
-                    timestamp,
-                    float(completed_row.Close),
-                )
-
-        position = strategy.position
-        if (
-            (position is None or position.open_quantity <= 0)
-            and (
-                strategy.done
-                or (
-                    strategy.state == "SEARCH_TRIGGER"
-                    and timestamp.time() > time(10, 0)
-                )
-            )
-        ):
-            break
         if position is not None and position.open_quantity > 0:
             if timestamp.time() >= MARKET_EXIT:
-                exit_price = float(minute.Open)
-                active = close_trade(
-                    active,
-                    strategy,
+                strategy.mark_closed(
                     timestamp,
-                    exit_price,
+                    float(minute.Open),
                     "MARKET_EXIT_1515",
-                    trades,
                 )
-                continue
-            active = manage_position_minute(
-                strategy,
-                active,
-                minute,
-                timestamp,
-                minute_end,
-                three_by_end,
-                processed,
-                symbol,
-            )
-            if strategy.position and strategy.position.open_quantity <= 0:
-                trades.append(finalize_record(active, strategy.position))
+                trades.append(finalize_record(active, position))
                 active = None
-            continue
-
-        if strategy.state == "WAIT_C1" and strategy.setup is not None:
-            trigger = strategy.setup.trigger
-            low_break = float(minute.Low) < trigger.low
-            high_break = float(minute.High) > trigger.high
-            if low_break:
-                strategy.on_entry_tick(timestamp, trigger.low - TICK_SIZE)
                 continue
-            if not high_break:
-                continue
-            entry_price = max(
-                float(minute.Open),
-                round(trigger.high + TICK_SIZE, 2),
-            )
-            position = strategy.on_entry_tick(timestamp, entry_price)
-            if position is None:
-                continue
-            active = new_trade_record(
-                trading_day,
-                position,
-                trigger,
-                None,
-                timestamp,
-            )
             if float(minute.Low) <= position.current_sl:
                 exit_price = (
                     float(minute.Open)
                     if float(minute.Open) <= position.current_sl
                     else position.current_sl
                 )
-                strategy.mark_closed(timestamp, exit_price, "INITIAL_SL")
+                reason = "RUNNER_TRAIL_SL" if position.tp1_booked else "INITIAL_SL"
+                strategy.mark_closed(timestamp, exit_price, reason)
                 trades.append(finalize_record(active, position))
                 active = None
+                continue
+            if (
+                not position.tp1_booked
+                and position.tp1_target is not None
+                and float(minute.High) >= position.tp1_target
+            ):
+                book_tp1(strategy, active, timestamp, minute_end, float(minute.Close))
+            strategy.on_one_minute(row_to_candle(symbol, minute, 1))
             continue
 
-        if strategy.state != "WAIT_C2" or strategy.setup is None:
-            continue
-        c1 = strategy.setup.c1
-        if c1 is None:
-            continue
-        low_break = float(minute.Low) < c1.low
-        high_break = float(minute.High) > c1.high
-        if low_break:
-            strategy.on_entry_tick(timestamp, c1.low - TICK_SIZE)
-            continue
-        if not high_break:
-            continue
-        entry_price = max(
-            float(minute.Open),
-            round(c1.high + TICK_SIZE, 2),
-        )
-        position = strategy.on_entry_tick(timestamp, entry_price)
-        if position is None:
-            continue
-        trigger = strategy.setup.trigger
-        active = new_trade_record(
-            trading_day,
-            position,
-            trigger,
-            c1,
-            timestamp,
-        )
+        if strategy.done:
+            break
 
-        if float(minute.Low) <= position.current_sl:
-            exit_price = (
-                float(minute.Open)
-                if float(minute.Open) <= position.current_sl
-                else position.current_sl
-            )
-            strategy.mark_closed(timestamp, exit_price, "INITIAL_SL")
-            trades.append(finalize_record(active, position))
-            active = None
-        elif (
-            position.tp1_target is not None
-            and float(minute.High) >= position.tp1_target
-        ):
-            book_tp1_minute(
-                strategy,
-                active,
-                minute,
-                timestamp,
-                minute_end,
-            )
+        entered = False
+        if strategy.setup is not None:
+            if (
+                float(minute.Low) < strategy.setup.trigger.low
+                and strategy.state in {"WAIT_G1", "WAIT_G2", "WAIT_G3"}
+            ):
+                strategy.on_entry_tick(
+                    timestamp,
+                    strategy.setup.trigger.low - TICK_SIZE,
+                )
+            elif strategy.state in {"WAIT_G2", "WAIT_G3"}:
+                g1 = strategy.setup.g1
+                if g1 is not None:
+                    if float(minute.Low) < g1.low:
+                        strategy.on_entry_tick(timestamp, g1.low - TICK_SIZE)
+                    elif float(minute.High) > g1.high:
+                        entry_price = max(
+                            float(minute.Open),
+                            round(g1.high + TICK_SIZE, 2),
+                        )
+                        position = strategy.on_entry_tick(timestamp, entry_price)
+                        if position is not None:
+                            active = new_trade_record(
+                                trading_day,
+                                position,
+                                strategy.setup.trigger,
+                                g1,
+                                timestamp,
+                            )
+                            entered = True
+                            if float(minute.Low) <= position.current_sl:
+                                exit_price = (
+                                    float(minute.Open)
+                                    if float(minute.Open) <= position.current_sl
+                                    else position.current_sl
+                                )
+                                strategy.mark_closed(
+                                    timestamp,
+                                    exit_price,
+                                    "INITIAL_SL",
+                                )
+                                trades.append(finalize_record(active, position))
+                                active = None
+                            elif float(minute.High) >= position.tp1_target:
+                                book_tp1(
+                                    strategy,
+                                    active,
+                                    timestamp,
+                                    minute_end,
+                                    float(minute.Close),
+                                )
+
+        if not entered and not strategy.done:
+            strategy.on_one_minute(row_to_candle(symbol, minute, 1))
 
     position = strategy.position
     if position is not None and position.open_quantity > 0 and active is not None:
@@ -318,85 +252,25 @@ def backtest_day(
     return trades, events
 
 
-def manage_position_minute(
+def book_tp1(
     strategy: ScannerStrategy,
     active: dict[str, Any] | None,
-    minute: Any,
-    timestamp: datetime,
-    minute_end: datetime,
-    three_by_end: dict[datetime, Any],
-    processed: set[datetime],
-    symbol: str,
-) -> dict[str, Any] | None:
-    position = strategy.position
-    if position is None or active is None:
-        return active
-    if float(minute.Low) <= position.current_sl:
-        exit_price = (
-            float(minute.Open)
-            if float(minute.Open) <= position.current_sl
-            else position.current_sl
-        )
-        reason = "RUNNER_TRAIL_SL" if position.tp1_booked else "INITIAL_SL"
-        strategy.mark_closed(timestamp, exit_price, reason)
-        return active
-    if (
-        position.tp1_target is not None
-        and not position.tp1_touched
-        and float(minute.High) >= position.tp1_target
-    ):
-        book_tp1_minute(
-            strategy,
-            active,
-            minute,
-            timestamp,
-            minute_end,
-        )
-    return active
-
-
-def book_tp1_minute(
-    strategy: ScannerStrategy,
-    active: dict[str, Any],
-    minute: Any,
-    timestamp: datetime,
-    minute_end: datetime,
+    touch_time: datetime,
+    exit_time: datetime,
+    close_price: float,
 ) -> None:
     position = strategy.position
-    if (
-        position is None
-        or position.tp1_target is None
-        or position.tp1_booked
-    ):
+    if position is None or active is None or position.tp1_booked:
         return
     position.tp1_touched = True
-    position.tp1_touch_time = timestamp
-    position.tp1_minute = timestamp.replace(second=0, microsecond=0)
-    strategy.tp1_ever_hit = True
-    strategy.mark_tp1_booked(minute_end, float(minute.Close))
-    active["TP1TouchTime"] = iso(timestamp)
-    active["TP1ExitTime"] = iso(minute_end)
-    active["TP1ExitPrice"] = float(minute.Close)
+    position.tp1_touch_time = touch_time
+    position.tp1_minute = touch_time
+    strategy.mark_tp1_booked(exit_time, close_price)
+    active["TP1TouchTime"] = iso(touch_time)
+    active["TP1ExitTime"] = iso(exit_time)
+    active["TP1ExitPrice"] = close_price
     active["TP1Quantity"] = TP1_QUANTITY
     active["TP1ExecutionRule"] = "TARGET_TOUCH_1M_CLOSE"
-    active["FinalQuantity"] = RUNNER_QUANTITY
-
-
-def book_tp1_at_c1_close(
-    strategy: ScannerStrategy,
-    active: dict[str, Any],
-    timestamp: datetime,
-    price: float,
-) -> None:
-    position = strategy.position
-    if position is None or position.tp1_booked:
-        return
-    strategy.mark_tp1_booked(timestamp, price)
-    active["TP1TouchTime"] = iso(timestamp)
-    active["TP1ExitTime"] = iso(timestamp)
-    active["TP1ExitPrice"] = price
-    active["TP1Quantity"] = TP1_QUANTITY
-    active["TP1ExecutionRule"] = "C1_CLOSE_ALREADY_REACHED_1_5R"
     active["FinalQuantity"] = RUNNER_QUANTITY
 
 
@@ -404,18 +278,9 @@ def new_trade_record(
     trading_day: date,
     position,
     trigger: Candle,
-    c1: Candle | None,
+    g1: Candle,
     entry_minute: datetime,
 ) -> dict[str, Any]:
-    blank_c1 = {
-        "C1Time": "",
-        "C1Open": None,
-        "C1High": None,
-        "C1Low": None,
-        "C1Close": None,
-        "C1Volume": None,
-        "C1VWAP": None,
-    }
     return {
         "Date": trading_day.isoformat(),
         "Month": trading_day.strftime("%Y-%m"),
@@ -423,22 +288,14 @@ def new_trade_record(
         "SetupNumber": position.setup_number,
         "EntryMode": position.entry_mode,
         **candle_fields("Trigger", trigger),
-        **(candle_fields("C1", c1) if c1 is not None else blank_c1),
-        "C2Minute": (
-            iso(entry_minute)
-            if position.entry_mode == "C1_HIGH_BREAK"
-            else ""
-        ),
-        "EntryTime": iso(entry_minute),
+        **candle_fields("G1", g1),
+        "G1RangePercent": round((g1.high - g1.low) / g1.low * 100, 6),
+        "EntryMinute": iso(entry_minute),
+        "EntryTime": iso(position.entry_time),
         "EntryPrice": position.entry_price,
         "Quantity": QUANTITY,
         "InitialSL": position.initial_sl,
-        "PostC1SL": c1.low if c1 is not None else None,
-        "RiskPerShare": (
-            position.entry_price - c1.low
-            if c1 is not None
-            else position.entry_price - position.initial_sl
-        ),
+        "RiskPerShare": position.entry_price - position.initial_sl,
         "TP1Target": position.tp1_target,
         "TP1TouchTime": "",
         "TP1ExitTime": "",
@@ -450,37 +307,19 @@ def new_trade_record(
         "FinalQuantity": QUANTITY,
         "ExitReason": "",
         "GrossPnL": None,
+        "NetRR": None,
         "RMultiple": None,
         "HoldingMinutes": None,
     }
 
 
-def close_trade(
-    active: dict[str, Any] | None,
-    strategy: ScannerStrategy,
-    timestamp: datetime,
-    price: float,
-    reason: str,
-    trades: list[dict[str, Any]],
-) -> None:
-    position = strategy.position
-    if position is None or active is None:
-        return None
-    strategy.mark_closed(timestamp, price, reason)
-    trades.append(finalize_record(active, position))
-    return None
-
-
-def finalize_record(
-    record: dict[str, Any],
-    position,
-) -> dict[str, Any]:
+def finalize_record(record: dict[str, Any] | None, position) -> dict[str, Any]:
+    if record is None:
+        raise ValueError("Position closed without an active trade record.")
     result = dict(record)
     result["FinalExitTime"] = iso(position.final_exit_time)
     result["FinalExitPrice"] = position.final_exit_price
-    result["FinalQuantity"] = (
-        RUNNER_QUANTITY if position.tp1_booked else QUANTITY
-    )
+    result["FinalQuantity"] = RUNNER_QUANTITY if position.tp1_booked else QUANTITY
     result["ExitReason"] = position.final_exit_reason
     tp1_pnl = (
         (position.tp1_exit_price - position.entry_price) * TP1_QUANTITY
@@ -493,11 +332,9 @@ def finalize_record(
     )
     result["GrossPnL"] = round(tp1_pnl + final_pnl, 2)
     initial_risk = float(result["RiskPerShare"]) * QUANTITY
-    result["RMultiple"] = (
-        round(result["GrossPnL"] / initial_risk, 4)
-        if initial_risk > 0
-        else None
-    )
+    net_rr = result["GrossPnL"] / initial_risk if initial_risk > 0 else None
+    result["NetRR"] = round(net_rr, 4) if net_rr is not None else None
+    result["RMultiple"] = result["NetRR"]
     result["HoldingMinutes"] = round(
         (position.final_exit_time - position.entry_time).total_seconds() / 60,
         2,
@@ -534,18 +371,19 @@ def summarize(trades: pd.DataFrame, key: str) -> pd.DataFrame:
                 "GrossProfit": round(float(pnl[pnl > 0].sum()), 2),
                 "GrossLoss": round(float(pnl[pnl < 0].sum()), 2),
                 "NetPnL": round(float(pnl.sum()), 2),
+                "NetRR": round(float(group["NetRR"].sum()), 4),
                 "AveragePnL": round(float(pnl.mean()), 2),
-                "AverageR": round(float(group["RMultiple"].mean()), 4),
+                "AverageRR": round(float(group["NetRR"].mean()), 4),
                 "BestTrade": round(float(pnl.max()), 2),
                 "WorstTrade": round(float(pnl.min()), 2),
                 "TP1Trades": int(
                     group["TP1ExitTime"].fillna("").astype(bool).sum()
                 ),
-                "EarlyEntryTrades": int(
-                    (group["EntryMode"] == "TRIGGER_HIGH_BREAK").sum()
+                "G2EntryTrades": int(
+                    (group["EntryMode"] == "G2_G1_HIGH_BREAK").sum()
                 ),
-                "FallbackEntryTrades": int(
-                    (group["EntryMode"] == "C1_HIGH_BREAK").sum()
+                "G3EntryTrades": int(
+                    (group["EntryMode"] == "G3_G1_HIGH_BREAK").sum()
                 ),
                 "InitialSLTrades": int((group["ExitReason"] == "INITIAL_SL").sum()),
             }
@@ -560,7 +398,9 @@ def main() -> None:
     universe = universe.drop_duplicates("Symbol").sort_values("Symbol")
     universe = universe.iloc[args.start_index : args.end_index].copy()
     start = pd.Timestamp(args.start, tz="Asia/Kolkata")
-    end = pd.Timestamp(args.end, tz="Asia/Kolkata") + pd.Timedelta(hours=23, minutes=59)
+    end = pd.Timestamp(args.end, tz="Asia/Kolkata") + pd.Timedelta(
+        hours=23, minutes=59
+    )
     all_trades: list[dict[str, Any]] = []
     all_events: list[dict[str, Any]] = []
     coverage: list[dict[str, Any]] = []
@@ -572,8 +412,6 @@ def main() -> None:
             if minute.empty:
                 coverage.append({"Symbol": symbol, "Status": "NO_DATA"})
                 continue
-            symbol_trades = []
-            symbol_events = []
             three_all = make_three_minute(minute)
             three_groups = {
                 group_day: group.copy()
@@ -581,6 +419,8 @@ def main() -> None:
                     three_all["Datetime"].dt.date
                 )
             }
+            symbol_trades = []
+            symbol_events = []
             for trading_day, day_frame in minute.groupby(minute["Datetime"].dt.date):
                 day_frame = day_frame[
                     (day_frame["Datetime"].dt.time >= time(9, 15))
@@ -607,11 +447,7 @@ def main() -> None:
                     "Trades": len(symbol_trades),
                 }
             )
-            print(
-                f"[{sequence}/{len(universe)}] {symbol}: "
-                f"{len(symbol_trades)} trades",
-                flush=True,
-            )
+            print(f"[{sequence}/{len(universe)}] {symbol}: {len(symbol_trades)} trades")
         except Exception as error:
             coverage.append(
                 {
@@ -625,58 +461,61 @@ def main() -> None:
     events_frame = pd.DataFrame(all_events)
     coverage_frame = pd.DataFrame(coverage)
     if not trades_frame.empty:
-        trades_frame = trades_frame.sort_values(["EntryTime", "Symbol"]).reset_index(drop=True)
+        trades_frame = trades_frame.sort_values(["EntryTime", "Symbol"]).reset_index(
+            drop=True
+        )
     if not events_frame.empty:
-        events_frame = events_frame.sort_values(["EventTime", "Symbol"]).reset_index(drop=True)
+        events_frame = events_frame.sort_values(["EventTime", "Symbol"]).reset_index(
+            drop=True
+        )
 
-    monthly = summarize(trades_frame, "Month")
-    daily = summarize(trades_frame, "Date")
-    stock = summarize(trades_frame, "Symbol")
+    summarize(trades_frame, "Month").to_csv(
+        args.output / "MonthlySummary.csv", index=False
+    )
+    summarize(trades_frame, "Date").to_csv(
+        args.output / "DailySummary.csv", index=False
+    )
+    summarize(trades_frame, "Symbol").to_csv(
+        args.output / "StockSummary.csv", index=False
+    )
     trades_frame.to_csv(args.output / "Trades.csv", index=False)
     events_frame.to_csv(args.output / "SetupAudit.csv", index=False)
-    monthly.to_csv(args.output / "MonthlySummary.csv", index=False)
-    daily.to_csv(args.output / "DailySummary.csv", index=False)
-    stock.to_csv(args.output / "StockSummary.csv", index=False)
     coverage_frame.to_csv(args.output / "Coverage.csv", index=False)
 
-    actual_start = coverage_frame.loc[
-        coverage_frame["Status"] == "OK", "FirstCandle"
-    ].min()
-    actual_end = coverage_frame.loc[
-        coverage_frame["Status"] == "OK", "LastCandle"
-    ].max()
-    result_summary = {
+    valid = coverage_frame[coverage_frame["Status"] == "OK"]
+    pnl = trades_frame.get("GrossPnL", pd.Series(dtype=float))
+    rr = trades_frame.get("NetRR", pd.Series(dtype=float))
+    summary = {
         "RequestedStart": args.start,
         "RequestedEnd": args.end,
-        "ActualDataStart": actual_start,
-        "ActualDataEnd": actual_end,
+        "ActualDataStart": valid["FirstCandle"].min() if not valid.empty else None,
+        "ActualDataEnd": valid["LastCandle"].max() if not valid.empty else None,
         "UniverseStocks": int(len(universe)),
-        "CoveredStocks": int((coverage_frame["Status"] == "OK").sum()),
+        "CoveredStocks": int(len(valid)),
         "Trades": int(len(trades_frame)),
-        "Winners": int((trades_frame.get("GrossPnL", pd.Series(dtype=float)) > 0).sum()),
-        "NetPnL": round(float(trades_frame.get("GrossPnL", pd.Series(dtype=float)).sum()), 2),
+        "Winners": int((pnl > 0).sum()),
+        "Losers": int((pnl < 0).sum()),
+        "NetPnL": round(float(pnl.sum()), 2),
+        "NetRR": round(float(rr.sum()), 4),
+        "AverageRR": round(float(rr.mean()), 4) if len(rr) else 0.0,
         "Notes": [
             "HLC3 session VWAP resets at 09:15 IST.",
-            "Trigger starts are limited to 09:30 through 09:51 IST.",
-            "The first red 3m candle is the only trigger candidate per stock/day.",
-            "A failed first-red trigger or invalid C1 discards the stock for the day.",
-            "Trigger close must be within the previous green 3m candle range.",
-            "Only one counted valid-C1 setup is allowed per stock/day.",
-            "Trigger-high break during C1 enters immediately with Trigger low as SL.",
-            "Fallback entry uses max(C2 minute open, C1 high plus one tick).",
-            "At C1 close SL moves up to C1 low and the 1.5R target is calculated.",
-            "If C1 already reached the calculated 1.5R, 50 shares exit at C1 close.",
-            "Without an early entry, valid C1 falls back to the normal C2 entry.",
-            "100 shares: 50 exit at 1.5R and 50 trail by completed 3m lows.",
-            "Active stop wins over entry/target when both occur in one 1m OHLC bar.",
+            "Only the first red 3m candle among 09:30, 09:33 and 09:36 is tested.",
+            "The existing previous-green/VWAP/inside-range Trigger rules remain.",
+            "The next four 1m candles are the complete guide window.",
+            "The first green guide candle is G1 and its range must be <=0.20%.",
+            "G2 must strictly break G1 high, or equal it for one G3 opportunity.",
+            "G1/Trigger low breaks before entry discard the stock for the day.",
+            "100 shares: 50 exit at 2.2R on target-touch 1m close.",
+            "After TP1, runner stop moves to entry and only red completed 3m lows trail it.",
+            "Active stop wins when stop and target/entry coexist in one 1m OHLC bar.",
             "No brokerage, taxes, fees or slippage are deducted.",
         ],
     }
     (args.output / "Summary.json").write_text(
-        json.dumps(result_summary, indent=2),
-        encoding="utf-8",
+        json.dumps(summary, indent=2), encoding="utf-8"
     )
-    print(json.dumps(result_summary, indent=2), flush=True)
+    print(json.dumps(summary, indent=2), flush=True)
 
 
 def iso(value: datetime | None) -> str:

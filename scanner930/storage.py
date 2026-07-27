@@ -211,7 +211,7 @@ class SQLiteStore:
             """,
             (timestamp.isoformat(), symbol, event_type, price, encoded),
         )
-        if event_type in {"C1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"}:
+        if event_type in {"G1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"}:
             self.execute(
                 """
                 INSERT INTO setups(
