@@ -27,10 +27,10 @@ window, discard the stock for the day.
 - Inspect the next three completed 1-minute candles after the Trigger.
 - The first green candle is G1. If none is green, discard the stock.
 - A strict Trigger-low break before or during G1 discards the stock.
-- After G1, inspect the immediately following three 1-minute candles.
-- Buy 100 shares immediately when any of them strictly breaks G1 high.
+- After G1, inspect only the immediately following 1-minute candle.
+- Buy 100 shares immediately when that candle strictly breaks G1 high.
 - A strict G1-low or Trigger-low break before entry discards the stock.
-- If none of those three candles breaks G1 high, discard the stock.
+- If that next candle does not break G1 high, discard the stock.
 
 Before accepting the G1-high break, classify the setup using completed candles
 only:
@@ -48,7 +48,7 @@ available candles before the requested start date, and a continuously running
 live process preserves its completed-candle EMA history across day resets.
 
 The backtest uses one NSE tick above G1 high and assumes the low-side failure
-occurs first when both sides are present in the same 1-minute OHLC candle.
+occurs first when both sides are present in the next 1-minute OHLC candle.
 
 ## Percentage target
 

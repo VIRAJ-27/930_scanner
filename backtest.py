@@ -572,7 +572,7 @@ def main():
             "HLC3 session VWAP resets at 09:15 IST.",
             "The first red 3m Trigger among 09:30, 09:33 and 09:36 uses the unchanged validation rules.",
             "G1 is the first green candle in the next three 1m candles.",
-            "Entry is a strict G1-high break in any of the next three 1m candles.",
+            "Entry is a strict G1-high break only in the immediately next 1m candle.",
             "Silver: completed 1m EMA20 rises at least 0.116% over five candles and G1 body is at least 57.9% of range.",
             "Normal: when Silver fails, completed 3m EMA20 rises at least 0.01% over two candles.",
             "Silver has precedence; entries passing neither tier are discarded.",

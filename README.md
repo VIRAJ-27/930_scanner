@@ -3,8 +3,8 @@
 Python paper/live scanner and backtester for the Trigger Percentage strategy.
 
 The first valid red 3-minute Trigger among 09:30, 09:33 and 09:36 starts a
-three-candle G1 search. A strict G1-high break during the following three
-1-minute candles enters the trade. TP1 is the lower of the Trigger-percentage
+three-candle G1 search. A strict G1-high break during only the immediately
+following 1-minute candle enters the trade. TP1 is the lower of the Trigger-percentage
 R1 level and the entry-based 3R R2 level.
 
 See `STRATEGY_SPEC.md` for all confirmed entry, stop, exit and reporting rules.

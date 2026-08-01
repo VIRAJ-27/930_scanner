@@ -104,7 +104,7 @@ def main() -> None:
             ),
             (
                 "Entry",
-                "Strict G1-high break in any of the next three 1m candles; "
+                "Strict G1-high break only in the immediately next 1m candle; "
                 "G1/Trigger-low break first discards",
             ),
             (

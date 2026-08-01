@@ -74,11 +74,10 @@ class StrategyRuleTests(unittest.TestCase):
             "NO_GREEN_G1_IN_THREE_1M_CANDLES",
         )
 
-    def test_any_of_next_three_can_break_g1_high(self):
+    def test_only_next_candle_can_break_g1_high(self):
         self.valid_trigger()
         self.add_g1()
-        self.strategy.on_one_minute(c1("09:34", 100.4, 100.49, 100.2, 100.45))
-        position = self.strategy.on_entry_tick(moment("09:35:20"), 100.51)
+        position = self.strategy.on_entry_tick(moment("09:34:20"), 100.51)
         self.assertIsNotNone(position)
         self.assertEqual(position.initial_sl, 100.0)
         self.assertEqual(position.entry_mode, "G1_HIGH_BREAK")
@@ -114,16 +113,23 @@ class StrategyRuleTests(unittest.TestCase):
             self.events[-1][1]["outcome"], "ENTRY_CANDLE_BROKE_G1_LOW"
         )
 
-    def test_no_break_in_three_entry_candles_discards(self):
+    def test_no_break_in_next_entry_candle_discards(self):
         self.valid_trigger()
         self.add_g1()
-        for hhmm in ["09:34", "09:35", "09:36"]:
-            self.strategy.on_one_minute(c1(hhmm, 100.4, 100.49, 100.2, 100.45))
+        self.strategy.on_one_minute(c1("09:34", 100.4, 100.49, 100.2, 100.45))
         self.assertEqual(self.strategy.state, "DONE")
         self.assertEqual(
             self.events[-1][1]["outcome"],
-            "NO_G1_HIGH_BREAK_IN_THREE_CANDLES",
+            "NO_G1_HIGH_BREAK_IN_NEXT_CANDLE",
         )
+
+    def test_second_candle_after_g1_cannot_enter(self):
+        self.valid_trigger()
+        self.add_g1()
+        self.strategy.on_one_minute(c1("09:34", 100.4, 100.49, 100.2, 100.45))
+        position = self.strategy.on_entry_tick(moment("09:35:10"), 100.51)
+        self.assertIsNone(position)
+        self.assertEqual(self.strategy.state, "DONE")
 
     def test_target_is_minimum_of_r1_and_three_r(self):
         self.valid_trigger()

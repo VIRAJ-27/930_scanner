@@ -237,7 +237,7 @@ class ScannerStrategy:
             self._discard_day(
                 candle.completion_time,
                 candle.close,
-                "NO_G1_HIGH_BREAK_IN_THREE_CANDLES",
+                "NO_G1_HIGH_BREAK_IN_NEXT_CANDLE",
             )
 
     def on_entry_tick(self, timestamp: datetime, price: float) -> Position | None:
