@@ -44,8 +44,18 @@ class Candle:
 class Setup:
     number: int
     trigger: Candle
-    c1: Candle | None = None
-    c2_start: datetime | None = None
+    g1_window_start: datetime | None = None
+    g1_window_end: datetime | None = None
+    g1: Candle | None = None
+    entry_window_start: datetime | None = None
+    entry_window_end: datetime | None = None
+    trigger_range_fraction: float | None = None
+    ep_fraction: float | None = None
+    r1_target: float | None = None
+    entry_tier: str | None = None
+    ema_3m_rise_fraction: float | None = None
+    ema_1m_rise_fraction: float | None = None
+    g1_body_fraction: float | None = None
     outcome: str = ""
 
 
@@ -60,10 +70,15 @@ class Position:
     current_sl: float
     tp1_target: float | None
     open_quantity: int = 100
-    entry_mode: str = "C1_HIGH_BREAK"
-    awaiting_c1_close: bool = False
-    tp1_due_at_c1_close: bool = False
-    c1_low: float | None = None
+    entry_mode: str = "G1_HIGH_BREAK"
+    entry_tier: str = ""
+    ema_3m_rise_fraction: float | None = None
+    ema_1m_rise_fraction: float | None = None
+    g1_body_fraction: float | None = None
+    g1_low: float | None = None
+    trigger_high: float | None = None
+    r1_target: float | None = None
+    r2_target: float | None = None
     tp1_touched: bool = False
     tp1_touch_time: datetime | None = None
     tp1_minute: datetime | None = None

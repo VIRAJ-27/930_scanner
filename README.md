@@ -1,62 +1,73 @@
-# 9:30 VWAP Equity Scanner
+# 9:30 Indian Equity Scanner
 
-Python/Angel One scanner for all current NSE stock F&O underlyings. It trades
-cash equity only and defaults to paper execution.
+Python paper/live scanner and backtester for the Trigger Percentage strategy.
 
-## Confirmed strategy
+The first valid red 3-minute Trigger among 09:30, 09:33 and 09:36 starts a
+three-candle G1 search. A strict G1-high break during only the immediately
+following 1-minute candle enters the trade. TP1 is the lower of the Trigger-percentage
+R1 level and the entry-based 3R R2 level.
 
-- Exchange-aligned 3m candles; HLC3 session VWAP resets at 09:15 IST.
-- From 09:30 through 09:51, the first red 3m candle is the stock's only trigger
-  candidate.
-- The Trigger must close above VWAP and inside the previous contiguous green
-  candle's range; that previous candle must also close above VWAP.
-- A failed first-red Trigger discards the stock for the entire day.
-- During the immediately next 3m candle (C1), a strict Trigger-high break buys
-  100 shares immediately with Trigger low as the initial SL.
-- At C1 close, move SL up to C1 low and calculate standard 1.5R from the actual
-  entry price and C1 low.
-- If C1 itself already reached the resulting TP1, sell 50 shares at C1 close.
-- If Trigger high never breaks during C1, require the normal green C1 with
-  `C1 low >= Trigger low`, then use the original C2 C1-high breakout entry.
-- Otherwise, TP1 sells 50 shares at the close of the one-minute candle that
-  touched 1.5R.
-- Trail the remaining 50 shares with the monotonic previous completed 3m
-  candle low.
-- Maximum one trigger candidate/trade per stock/day. Exit any runner at 15:15.
+See `STRATEGY_SPEC.md` for all confirmed entry, stop, exit and reporting rules.
 
-The precise rule treatment is in `STRATEGY_SPEC.md`.
+## Automated option paper mode
 
-## First run
+`--option-paper` keeps every signal, stop, TP1 and trailing decision on the
+underlying stock, while paper-filling the selected current-expiry stock CE at
+best ask and exiting at best bid. Quotes that are stale, missing or wider than
+the configured maximum spread are rejected rather than estimated.
 
-1. Double-click `setup_scanner.cmd`.
-2. The scanner first looks for a local `.env`. If absent, it reuses the
-   existing VBOS project's broker `.env`. Set `SCANNER_BROKER_ENV` to override
-   that location.
-3. Start before 09:15 with `start_paper.cmd`.
-4. Review `LiveReports/Scanner930_Dashboard.xlsx` and the CSV ledgers.
+```powershell
+python run_scanner.py --option-paper
+```
 
-## Live-order lock
+For unattended Ubuntu VPS installation, Telegram/email delivery, systemd
+restart recovery and the weekday 09:10 IST timer, see `deploy/README_VPS.md`.
 
-Paper-test first. Live mode requires both:
+### Free GitHub Actions schedule
 
-1. `LIVE_APPROVAL.txt` containing exactly `LIVE_EQUITY_ORDERS`.
-2. The explicit confirmation already present in `start_live.cmd`.
+The workflow `.github/workflows/option-paper.yml` starts at 09:25 IST on
+weekdays and force-closes remaining positions at 11:00 with exit reason
+`TIME_EXIT_11_00`. It uses encrypted repository secrets and never enables live
+broker orders. Scheduled workflows run only from the default branch. See
+`deploy/README_GITHUB_ACTIONS.md` for secret setup and daily operation.
 
-Live orders are NSE `INTRADAY` market orders. Broker order IDs, status, and
-average fill price are recorded in `OrderBook`. The program never retries an
-uncertain order automatically.
+## Safety
 
-## Reports
+- Paper mode is the default.
+- Live mode requires the command-line confirmation and the untracked
+  `LIVE_APPROVAL.txt` approval file.
+- `.env`, live data and generated live reports are excluded from Git.
+- Never commit broker credentials.
 
-- `TradeBook`: entry route, stops, TP1, runner exit, and P&L
-- `SetupLedger`: counted setups and failures
-- `OrderBook`: paper/live broker-order audit trail
-- `LiveEvents`: complete chronological rule events
-- `CompletedCandles`: one- and three-minute OHLCV/VWAP
-- `DailySummary`, `StockSummary`, `LiveStatus`, and dashboard workbook
+## Setup and run
 
-Run tests:
+```powershell
+setup_scanner.cmd
+start_paper.cmd
+```
+
+Live trading should only be started after paper validation:
+
+```powershell
+start_live.cmd
+```
+
+## Tests
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+## Backtest
+
+```powershell
+python backtest.py `
+  --base-data C:\path\to\Data `
+  --output C:\path\to\output `
+  --start 2026-04-01 `
+  --end 2026-07-24
+```
+
+Backtest outputs include trade and monthly NetRR, target-driver fields, runner
+P&L, equity curves, drawdown, runner/stop stock patterns and comparison data.
+Historical results are gross of costs and are not a live audited track record.

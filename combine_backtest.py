@@ -48,13 +48,18 @@ def main() -> None:
         coverage = coverage.sort_values("Symbol").reset_index(drop=True)
 
     monthly = summarize(trades, "Month")
+    tier = (
+        summarize(trades, "EntryTier")
+        if "EntryTier" in trades.columns
+        else pd.DataFrame()
+    )
     daily = summarize(trades, "Date")
     stock = summarize(trades, "Symbol")
     trades.to_csv(args.output / "Trades.csv", index=False)
     events.to_csv(args.output / "SetupAudit.csv", index=False)
     setup_report = events[
         events["EventType"].isin(
-            ["C1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"]
+            ["G1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"]
         )
     ].copy()
     setup_report.to_csv(args.output / "SetupReport.csv", index=False)
@@ -67,6 +72,7 @@ def main() -> None:
     )
     event_summary.to_csv(args.output / "EventSummary.csv", index=False)
     monthly.to_csv(args.output / "MonthlySummary.csv", index=False)
+    tier.to_csv(args.output / "EntryTierSummary.csv", index=False)
     daily.to_csv(args.output / "DailySummary.csv", index=False)
     stock.to_csv(args.output / "StockSummary.csv", index=False)
     coverage.to_csv(args.output / "Coverage.csv", index=False)
@@ -84,32 +90,54 @@ def main() -> None:
             ("VWAP reset", "Every trading session at 09:15 IST"),
             (
                 "Trigger",
-                "First red 3m candle from 09:30-09:51 is the only candidate; "
+                "First red 3m candle among 09:30, 09:33 and 09:36 is the only candidate; "
                 "must close above VWAP and inside previous green 3m range, "
                 "otherwise discard stock for the day",
             ),
             (
-                "Early entry",
-                "During next 3m candle, strict Trigger-high break buys 100 "
-                "shares with Trigger low as initial SL",
+                "G1 window",
+                "First green candle in the next three completed 1m candles after Trigger",
             ),
             (
-                "C1 close",
-                "Move SL up to C1 low; calculate standard 1.5R from entry "
-                "to C1 low",
+                "G1",
+                "Trigger-low break before/during G1 discards the stock",
             ),
             (
-                "Fallback",
-                "If Trigger high did not break, require valid C1 and use normal "
-                "C2 strict C1-high breakout entry",
+                "Entry",
+                "Strict G1-high break only in the immediately next 1m candle; "
+                "G1/Trigger-low break first discards",
+            ),
+            (
+                "Silver tier",
+                "Completed 1m EMA20 rises at least 0.116% over five candles "
+                "and G1 body is at least 57.9% of its range",
+            ),
+            (
+                "Normal tier",
+                "If Silver fails, completed 3m EMA20 rises at least 0.01% "
+                "over two candles; entries passing neither tier are discarded",
+            ),
+            (
+                "EP and R1",
+                "Trigger range <0.50% uses range x1.4; otherwise adds 0.10 "
+                "percentage points; R1 is EP% above Trigger high",
             ),
             (
                 "TP1",
-                "1.5R; sell 50 shares at target-touch 1m close, or at C1 close "
-                "when C1 already reached the final target",
+                "Minimum of R1 and entry + 3x(entry-Trigger low); sell 70 "
+                "shares at target-touch 1m candle close",
             ),
-            ("Runner", "50 shares; monotonic prior completed 3m low after TP1"),
-            ("Maximum setups", "One counted valid-C1 setup per stock/day"),
+            (
+                "Runner",
+                "30 shares; move SL to Trigger high after TP1, then use "
+                "monotonic completed 5m candle lows",
+            ),
+            (
+                "Pre-TP1 stop upgrade",
+                "After entry, a completed 3m close above Trigger high moves "
+                "SL from Trigger low to G1 low",
+            ),
+            ("Maximum setups", "One setup per stock/day"),
             ("Market exit", "15:15 IST"),
             ("Costs", "Brokerage, taxes, fees and slippage excluded"),
         ],
@@ -128,10 +156,16 @@ def main() -> None:
         "Trades": int(len(trades)),
         "Winners": int((pnl > 0).sum()),
         "Losers": int((pnl < 0).sum()),
+        "WinRate": round(float((pnl > 0).mean()), 4) if len(pnl) else 0.0,
         "NetPnL": round(float(pnl.sum()), 2),
         "AveragePnL": round(float(pnl.mean()), 2) if len(pnl) else 0.0,
-        "AverageR": (
-            round(float(trades["RMultiple"].mean()), 4)
+        "NetRR": (
+            round(float(trades["NetRR"].sum()), 4)
+            if not trades.empty
+            else 0.0
+        ),
+        "AverageRR": (
+            round(float(trades["NetRR"].mean()), 4)
             if not trades.empty
             else 0.0
         ),
@@ -140,13 +174,23 @@ def main() -> None:
             if not trades.empty
             else 0
         ),
-        "EarlyEntryTrades": (
-            int((trades["EntryMode"] == "TRIGGER_HIGH_BREAK").sum())
+        "NormalTrades": (
+            int((trades["EntryTier"] == "NORMAL").sum())
+            if "EntryTier" in trades.columns
+            else 0
+        ),
+        "SilverTrades": (
+            int((trades["EntryTier"] == "SILVER").sum())
+            if "EntryTier" in trades.columns
+            else 0
+        ),
+        "R1TargetTrades": (
+            int((trades["TargetDriver"] == "R1").sum())
             if not trades.empty
             else 0
         ),
-        "FallbackEntryTrades": (
-            int((trades["EntryMode"] == "C1_HIGH_BREAK").sum())
+        "R2TargetTrades": (
+            int((trades["TargetDriver"] == "R2").sum())
             if not trades.empty
             else 0
         ),

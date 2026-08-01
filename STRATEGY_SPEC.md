@@ -1,78 +1,107 @@
-# 9:30 Scanner — Confirmed Source of Truth
+# 9:30 Scanner — Trigger Percentage
 
-## Market and position
+## Market and data
 
-- Universe: all current NSE stock F&O underlyings.
-- Instrument traded: NSE cash equity, intraday product.
-- Direction: buy only.
-- Quantity: 100 shares (two lots of 50).
-- Time zone: Asia/Kolkata.
-- Candle boundaries are exchange aligned. The 09:30 3m candle covers
-  09:30:00–09:32:59 and completes at 09:33:00.
+- NSE cash equity, buy-only.
+- HLC3 VWAP: `(High + Low + Close) / 3`, volume weighted from 09:15 IST.
+- Three-minute candles are aligned to 09:15 IST.
+- One setup and at most one trade per stock/day.
 
-## VWAP
+## Trigger
 
-- Reset every session at 09:15.
-- For every completed 3m candle:
-  `typical price = (high + low + close) / 3`.
-- `VWAP = cumulative(typical price × candle volume) / cumulative volume`.
-- “Above VWAP” is strict: close must be greater than VWAP.
+Only the 3-minute candles starting at 09:30, 09:33 and 09:36 are considered.
+The first red candle among them is the only Trigger candidate.
 
-## First-red trigger rule
+The Trigger is valid only when:
 
-- Eligible trigger starts: 09:30, 09:33, …, 09:51.
-- Starting at 09:30, ignore green/doji candles until the first red 3m candle.
-- That first red candle is the day's only trigger candidate for the stock.
-- It must close above its VWAP.
-- Its immediately previous contiguous 3m candle must be green and close above
-  its own VWAP.
-- Trigger close must be inside the previous candle's inclusive range:
-  `previous low <= trigger close <= previous high`.
-- If the first red candle fails any condition, discard the stock for the day.
+1. it closes above session VWAP;
+2. the immediately previous contiguous 3-minute candle is green;
+3. that previous candle closes above VWAP; and
+4. the Trigger close is inside the previous candle's high-low range.
 
-## Early trigger-break entry
+If the first red candle fails, or no red candle appears in the three-candle
+window, discard the stock for the day.
 
-- The immediately next 3m candle after the valid Trigger is called C1.
-- During C1, a sequential tick strictly above Trigger high buys 100 shares.
-- Initial stop is Trigger low.
-- If a tick trades strictly below Trigger low before entry, discard the stock.
-- Stop touches after entry (`price <= active stop`) exit immediately.
-- At C1 close, move the active stop up to C1 low. Never lower the stop.
-- After C1 closes, calculate:
-  `risk = entry price - C1 low`
-  and `TP1 = entry price + 1.5 × risk`.
-- If C1 high already reached/exceeded the final TP1, sell 50 shares at C1
-  close.
+## G1 and entry
 
-## Valid-C1 fallback and C2
+- Inspect the next three completed 1-minute candles after the Trigger.
+- The first green candle is G1. If none is green, discard the stock.
+- A strict Trigger-low break before or during G1 discards the stock.
+- After G1, inspect only the immediately following 1-minute candle.
+- Buy 100 shares immediately when that candle strictly breaks G1 high.
+- A strict G1-low or Trigger-low break before entry discards the stock.
+- If that next candle does not break G1 high, discard the stock.
 
-- If Trigger high does not break during C1, apply the original C1 rules.
-- C1 must close green and its low must be greater than or equal to Trigger low.
-- If C1 is invalid, discard the stock for the day.
-- Only the immediately next 3m candle after valid C1 is C2.
-- If `price < C1 low` first, discard the stock.
-- If `price > C1 high` first, buy 100 shares immediately with C1 low as SL.
-- Touching either level is not a strict break.
-- If C2 completes without a C1-high break, discard the stock.
+Before accepting the G1-high break, classify the setup using completed candles
+only:
 
-## TP1 and runner
+- **Silver**: the 1-minute EMA20 has risen at least 0.116% over the previous
+  five completed 1-minute candles, and G1's real body is at least 57.9% of its
+  high-low range.
+- **Normal**: if Silver fails, the 3-minute EMA20 has risen at least 0.01% over
+  the previous two completed 3-minute candles.
+- Silver has precedence when both conditions pass. If neither tier passes,
+  discard the stock for the day.
 
-- For either entry route, TP1 is standard 1.5R using entry price and C1 low.
-- After C1, when a tick reaches/exceeds TP1, remember that one-minute candle
-  and sell 50 shares at its completed close.
-- After the 50-share TP1 exit, the remaining 50-share runner stop becomes the
-  greater of the existing stop and the latest completed 3m candle low.
-- On every later completed 3m candle, raise the runner stop to its low only if
-  it increases the stop.
-- Any remaining quantity exits at 15:15.
-- An operator/service shutdown also squares off scanner-managed positions.
+EMA20 is continuous across trading sessions. Backtests warm it with all
+available candles before the requested start date, and a continuously running
+live process preserves its completed-candle EMA history across day resets.
 
-## Limits, ordering, and reports
+The backtest uses one NSE tick above G1 high and assumes the low-side failure
+occurs first when both sides are present in the next 1-minute OHLC candle.
 
-- Maximum one trigger candidate and one trade per stock/day.
-- A valid Trigger, failed C1/C2, entered trade, SL, TP1, or runner exit ends
-  further scanning for that stock that day.
-- On sequential ticks, an active stop is evaluated before target logic.
-- For ambiguous one-minute OHLC bars in the backtest, the stop/low break wins.
-- Paper fills use the stock signal price; live fills/status come from Angel's
-  order book and remain separately auditable.
+## Percentage target
+
+Trigger range percentage:
+
+`TriggerRange% = (Trigger High - Trigger Low) / Trigger Low × 100`
+
+EP percentage:
+
+- if `TriggerRange% < 0.50%`, `EP% = TriggerRange% × 1.4`;
+- if `TriggerRange% >= 0.50%`, `EP% = TriggerRange% + 0.10%`.
+
+Levels:
+
+- `R1 = Trigger High × (1 + EP% / 100)`;
+- `R2 = Entry + 3 × (Entry - Trigger Low)`;
+- `TP1 = minimum(R1, R2)`.
+
+If entry itself is already at or above TP1, TP1 is considered touched and the
+70-share partial exit occurs at that entry minute's close.
+
+## Stops and exits
+
+- Initial stop: Trigger low.
+- After entry, the first completed 3-minute candle that closes strictly above
+  Trigger high moves the stop to G1 low. The stop can never move down.
+- When a 1-minute candle touches TP1, sell 70 shares at that candle's close.
+- After TP1, move the remaining 30-share stop to Trigger high.
+- Subsequently, every completed 5-minute candle low can raise the runner stop.
+  Five-minute candles are aligned from 09:15 and the stop remains monotonic.
+- Stop exits are immediate when touched.
+- Exit any remaining position at 15:15 IST.
+
+## Reporting
+
+`NetRR = Gross P&L / (100 × (Entry - Trigger Low))`
+
+Monthly NetRR is the sum of trade NetRR. Backtest reports exclude brokerage,
+taxes, exchange fees and slippage.
+
+## Option paper overlay
+
+- Trigger, G1, entry, SL, TP1, trailing and 15:15 exit decisions remain based
+  exclusively on the underlying stock.
+- Use the nearest unexpired monthly stock CE.
+- For strike gaps below ₹10, choose the mathematically nearest strike; ties
+  choose the lower strike.
+- For strike gaps of ₹10 or more, calculate progress from the lower strike to
+  the upper strike. Choose the upper strike only at 75% progress or higher;
+  otherwise choose the lower strike.
+- Paper entry fills at the best ask and exits fill at the best bid.
+- Reject missing/stale quotes and entry spreads above 5%.
+- The initial evaluation uses one lot-equivalent with the stock strategy's
+  70% TP1 and 30% runner split applied proportionally. This normalized split
+  is not necessarily executable with one real exchange lot.
+- The option overlay cannot submit live option orders.
