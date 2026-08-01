@@ -54,6 +54,18 @@ def parse_args() -> argparse.Namespace:
         default="SCHEDULED_SERVICE_STOP",
         help="Exit label used only when --stop-at is reached.",
     )
+    parser.add_argument(
+        "--force-exit-at",
+        type=parse_clock_time,
+        default=None,
+        metavar="HH:MM",
+        help="Close open positions at this time but keep the service running.",
+    )
+    parser.add_argument(
+        "--force-exit-reason",
+        default="SCHEDULED_FORCE_EXIT",
+        help="Exit label used when --force-exit-at is reached.",
+    )
     return parser.parse_args()
 
 
@@ -179,10 +191,25 @@ def main() -> None:
     last_report = 0.0
     health_alert_sent = False
     scheduled_stop_reached = False
+    forced_exit_done = False
     try:
         while not stop_event.wait(1):
             now = datetime.now(ist)
             system.advance_clock(now)
+            if (
+                args.force_exit_at is not None
+                and not forced_exit_done
+                and now.time() >= args.force_exit_at
+            ):
+                positions_before_exit = system.open_position_count
+                system.close_all(now, args.force_exit_reason)
+                forced_exit_done = True
+                store.flush()
+                notifier.send_text(
+                    f"Scanner930 {args.force_exit_reason}: requested closure of "
+                    f"{positions_before_exit} open option position(s). Final "
+                    f"reports will be delivered at {args.stop_at.strftime('%H:%M')} IST."
+                )
             if now.time() >= args.stop_at:
                 scheduled_stop_reached = True
                 break

@@ -252,9 +252,14 @@ class OptionPaperExecutor:
             self._entry_details(position),
         )
         self.notify(
-            f"OPTION PAPER BUY {position.underlying} | {instrument.trading_symbol} | "
-            f"stock ₹{stock_position.entry_price:.2f} | ask ₹{quote.ask:.2f} | "
-            f"{self.paper_lots} lot-equivalent"
+            f"OPTION PAPER ENTRY | {position.underlying} | {position.entry_tier}\n"
+            f"Underlying entry: \u20b9{stock_position.entry_price:.2f}\n"
+            f"Contract: {instrument.trading_symbol}\n"
+            f"Paper fill (best ask): \u20b9{quote.ask:.2f}\n"
+            f"Quantity: {position.paper_quantity:g} "
+            f"({self.paper_lots} lot-equivalent)\n"
+            f"Underlying SL: \u20b9{stock_position.initial_sl:.2f}\n"
+            f"Underlying TP1: \u20b9{stock_position.tp1_target:.2f}"
         )
         return True
 
