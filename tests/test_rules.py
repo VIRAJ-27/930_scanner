@@ -33,6 +33,8 @@ class StrategyRuleTests(unittest.TestCase):
         )
 
     def valid_trigger(self, high=100.4, low=100.0):
+        self.strategy.on_three_minute(c3("09:21", 99.2, 99.8, 99.1, 99.7))
+        self.strategy.on_three_minute(c3("09:24", 99.6, 100.1, 99.5, 100.0))
         self.strategy.on_three_minute(c3("09:27", 99.8, 100.5, 99.7, 100.3))
         self.strategy.on_three_minute(
             c3("09:30", high - 0.05, high, low, high - 0.2)
@@ -80,6 +82,28 @@ class StrategyRuleTests(unittest.TestCase):
         self.assertIsNotNone(position)
         self.assertEqual(position.initial_sl, 100.0)
         self.assertEqual(position.entry_mode, "G1_HIGH_BREAK")
+        self.assertEqual(position.entry_tier, "NORMAL")
+
+    def test_silver_has_precedence_when_both_filters_pass(self):
+        self.valid_trigger()
+        self.add_g1(high=100.5, low=100.1, close=100.48)
+        self.strategy.ema20_1m = [100.0] * 5 + [100.2]
+        position = self.strategy.on_entry_tick(moment("09:34:10"), 100.51)
+        self.assertIsNotNone(position)
+        self.assertEqual(position.entry_tier, "SILVER")
+
+    def test_entry_is_discarded_when_neither_quality_filter_passes(self):
+        self.valid_trigger()
+        self.add_g1()
+        self.strategy.ema20_3m = [100.0, 100.0, 100.0]
+        self.strategy.ema20_1m = [100.0] * 6
+        position = self.strategy.on_entry_tick(moment("09:34:10"), 100.51)
+        self.assertIsNone(position)
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(
+            self.events[-1][1]["outcome"],
+            "ENTRY_QUALITY_FILTERS_FAILED",
+        )
 
     def test_g1_low_break_before_entry_discards(self):
         self.valid_trigger()

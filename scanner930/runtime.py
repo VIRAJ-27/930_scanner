@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from .broker import EquityBroker
 from .candles import CandleAggregator, SessionVwap, floor_time
@@ -11,6 +12,7 @@ from .config import (
     QUANTITY,
     RUNNER_QUANTITY,
     TP1_QUANTITY,
+    TIMEZONE,
 )
 from .instruments import EquityCatalog, EquityInstrument
 from .storage import SQLiteStore
@@ -32,6 +34,19 @@ class StockRuntime:
         self.should_record = should_record
         self.lock = threading.RLock()
         self.strategy = ScannerStrategy(self.symbol, self._emit)
+        today = datetime.now(ZoneInfo(TIMEZONE)).date()
+        for close in self.store.load_completed_closes(
+            self.symbol,
+            "1m",
+            today,
+        ):
+            ScannerStrategy._append_ema(self.strategy.ema20_1m, close)
+        for close in self.store.load_completed_closes(
+            self.symbol,
+            "3m",
+            today,
+        ):
+            ScannerStrategy._append_ema(self.strategy.ema20_3m, close)
         self.one_minute = CandleAggregator(self.symbol, 1, self._on_one_minute)
         self.three_minute = CandleAggregator(self.symbol, 3, self._on_three_minute)
         self.five_minute = CandleAggregator(self.symbol, 5, self._on_five_minute)
@@ -46,8 +61,12 @@ class StockRuntime:
         return position is not None and position.open_quantity > 0
 
     def reset_day(self, trading_day) -> None:
+        ema20_1m = list(self.strategy.ema20_1m)
+        ema20_3m = list(self.strategy.ema20_3m)
         self.trading_day = trading_day
         self.strategy = ScannerStrategy(self.symbol, self._emit)
+        self.strategy.ema20_1m = ema20_1m
+        self.strategy.ema20_3m = ema20_3m
         self.vwap = SessionVwap()
         self.closed_pnl = 0.0
 

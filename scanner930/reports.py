@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 QUERIES = {
     "TradeBook": """
         SELECT trade_id, trading_date, symbol, setup_number, entry_time,
-               entry_price, quantity, initial_sl, tp1_target, tp1_touch_time,
+               entry_price, entry_tier, quantity, initial_sl, tp1_target, tp1_touch_time,
                tp1_exit_time, tp1_exit_price, tp1_quantity,
                final_exit_time, final_exit_price, final_exit_quantity,
                final_exit_reason, realized_pnl, status
@@ -92,8 +92,8 @@ def export_reports(database_path: Path, output_dir: Path) -> None:
         ]
     )
     dashboard["B3"] = "=COUNTA('TradeBook'!$A$2:$A$100000)"
-    dashboard["D3"] = '=COUNTIF(\'TradeBook\'!$R$2:$R$100000,">0")'
-    dashboard["F3"] = "=SUM('TradeBook'!$R$2:$R$100000)"
+    dashboard["D3"] = '=COUNTIF(\'TradeBook\'!$S$2:$S$100000,">0")'
+    dashboard["F3"] = "=SUM('TradeBook'!$S$2:$S$100000)"
     dashboard["H3"] = (
         "=IFERROR(LOOKUP(2,1/('LiveStatus'!$G$2:$G$1000<>\"\"),"
         "'LiveStatus'!$G$2:$G$1000),0)"
@@ -123,7 +123,7 @@ def export_reports(database_path: Path, output_dir: Path) -> None:
     dashboard.append([])
     dashboard.append(["Report", "Purpose"])
     dashboard.append(
-        ["TradeBook", "G1-high entries, TP1, runner exits and realized P&L"]
+        ["TradeBook", "Normal/Silver G1-high entries, TP1, runners and P&L"]
     )
     dashboard.append(["SetupLedger", "Each Trigger/G1/entry-window outcome"])
     dashboard.append(["OrderBook", "Paper/live broker-order audit trail"])

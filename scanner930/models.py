@@ -52,6 +52,10 @@ class Setup:
     trigger_range_fraction: float | None = None
     ep_fraction: float | None = None
     r1_target: float | None = None
+    entry_tier: str | None = None
+    ema_3m_rise_fraction: float | None = None
+    ema_1m_rise_fraction: float | None = None
+    g1_body_fraction: float | None = None
     outcome: str = ""
 
 
@@ -67,6 +71,10 @@ class Position:
     tp1_target: float | None
     open_quantity: int = 100
     entry_mode: str = "G1_HIGH_BREAK"
+    entry_tier: str = ""
+    ema_3m_rise_fraction: float | None = None
+    ema_1m_rise_fraction: float | None = None
+    g1_body_fraction: float | None = None
     g1_low: float | None = None
     trigger_high: float | None = None
     r1_target: float | None = None

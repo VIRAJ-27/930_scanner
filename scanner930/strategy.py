@@ -4,11 +4,17 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 from .config import (
+    EMA_PERIOD,
     ENTRY_SEARCH_CANDLE_COUNT,
     G1_SEARCH_CANDLE_COUNT,
     LAST_TRIGGER_START,
+    NORMAL_EMA_3M_LOOKBACK_BARS,
+    NORMAL_EMA_3M_MIN_RISE,
     QUANTITY,
     RUNNER_QUANTITY,
+    SILVER_EMA_1M_LOOKBACK_BARS,
+    SILVER_EMA_1M_MIN_RISE,
+    SILVER_G1_MIN_BODY_FRACTION,
     TRIGGER_RANGE_ADDEND,
     TRIGGER_RANGE_MULTIPLIER,
     TRIGGER_RANGE_THRESHOLD,
@@ -30,12 +36,15 @@ class ScannerStrategy:
         self.attempts = 0
         self.position: Position | None = None
         self.tp1_ever_hit = False
+        self.ema20_1m: list[float] = []
+        self.ema20_3m: list[float] = []
 
     @property
     def done(self) -> bool:
         return self.state == "DONE"
 
     def on_three_minute(self, candle: Candle) -> None:
+        self._append_ema(self.ema20_3m, candle.close)
         position = self.position
         if position is not None and position.open_quantity > 0:
             if (
@@ -146,6 +155,7 @@ class ScannerStrategy:
             )
 
     def on_one_minute(self, candle: Candle) -> None:
+        self._append_ema(self.ema20_1m, candle.close)
         if self.setup is None or self.position is not None or self.done:
             return
         trigger = self.setup.trigger
@@ -252,6 +262,16 @@ class ScannerStrategy:
         if risk <= 0 or self.setup.r1_target is None:
             self._discard_day(timestamp, price, "NON_POSITIVE_RISK")
             return None
+        entry_tier, filter_details = self._classify_entry()
+        if entry_tier is None:
+            self._discard_day(
+                timestamp,
+                price,
+                "ENTRY_QUALITY_FILTERS_FAILED",
+                filter_details,
+            )
+            return None
+        self.setup.entry_tier = entry_tier
         r2_target = price + TP1_R_MULTIPLE * risk
         target = min(self.setup.r1_target, r2_target)
         return self._open_position(timestamp, price, r2_target, target)
@@ -278,6 +298,10 @@ class ScannerStrategy:
             tp1_target=target,
             open_quantity=QUANTITY,
             entry_mode="G1_HIGH_BREAK",
+            entry_tier=setup.entry_tier or "",
+            ema_3m_rise_fraction=setup.ema_3m_rise_fraction,
+            ema_1m_rise_fraction=setup.ema_1m_rise_fraction,
+            g1_body_fraction=setup.g1_body_fraction,
             g1_low=setup.g1.low,
             trigger_high=setup.trigger.high,
             r1_target=setup.r1_target,
@@ -294,6 +318,14 @@ class ScannerStrategy:
                 "setup_number": 1,
                 "quantity": QUANTITY,
                 "entry_mode": "G1_HIGH_BREAK",
+                "entry_tier": setup.entry_tier,
+                "ema_3m_rise_percent": self._percent(
+                    setup.ema_3m_rise_fraction
+                ),
+                "ema_1m_rise_percent": self._percent(
+                    setup.ema_1m_rise_fraction
+                ),
+                "g1_body_percent": self._percent(setup.g1_body_fraction),
                 "sl": setup.trigger.low,
                 "r1": setup.r1_target,
                 "r2": r2_target,
@@ -358,16 +390,95 @@ class ScannerStrategy:
             reasons.append("TRIGGER_CLOSE_OUTSIDE_PREVIOUS_RANGE")
         return reasons
 
-    def _discard_day(self, timestamp: datetime, price: float, outcome: str) -> None:
+    def _classify_entry(self) -> tuple[str | None, dict]:
+        setup = self.setup
+        if setup is None or setup.g1 is None:
+            return None, {}
+
+        ema_3m_rise = self._ema_rise(
+            self.ema20_3m,
+            NORMAL_EMA_3M_LOOKBACK_BARS,
+        )
+        ema_1m_rise = self._ema_rise(
+            self.ema20_1m,
+            SILVER_EMA_1M_LOOKBACK_BARS,
+        )
+        g1_range = setup.g1.high - setup.g1.low
+        g1_body = (
+            abs(setup.g1.close - setup.g1.open) / g1_range
+            if g1_range > 0
+            else 0.0
+        )
+        setup.ema_3m_rise_fraction = ema_3m_rise
+        setup.ema_1m_rise_fraction = ema_1m_rise
+        setup.g1_body_fraction = g1_body
+
+        silver = (
+            ema_1m_rise is not None
+            and ema_1m_rise >= SILVER_EMA_1M_MIN_RISE
+            and g1_body >= SILVER_G1_MIN_BODY_FRACTION
+        )
+        normal = (
+            ema_3m_rise is not None
+            and ema_3m_rise >= NORMAL_EMA_3M_MIN_RISE
+        )
+        details = {
+            "setup_number": 1,
+            "ema_3m_rise_percent": self._percent(ema_3m_rise),
+            "normal_threshold_percent": NORMAL_EMA_3M_MIN_RISE * 100,
+            "normal_pass": normal,
+            "ema_1m_rise_percent": self._percent(ema_1m_rise),
+            "silver_ema_threshold_percent": SILVER_EMA_1M_MIN_RISE * 100,
+            "g1_body_percent": g1_body * 100,
+            "silver_g1_body_threshold_percent": (
+                SILVER_G1_MIN_BODY_FRACTION * 100
+            ),
+            "silver_pass": silver,
+        }
+        if silver:
+            return "SILVER", details
+        if normal:
+            return "NORMAL", details
+        return None, details
+
+    @staticmethod
+    def _append_ema(history: list[float], close: float) -> None:
+        alpha = 2.0 / (EMA_PERIOD + 1.0)
+        ema = close if not history else alpha * close + (1.0 - alpha) * history[-1]
+        history.append(ema)
+
+    @staticmethod
+    def _ema_rise(history: list[float], lookback: int) -> float | None:
+        if len(history) <= lookback:
+            return None
+        earlier = history[-1 - lookback]
+        if earlier <= 0:
+            return None
+        return history[-1] / earlier - 1.0
+
+    @staticmethod
+    def _percent(value: float | None) -> float | None:
+        return None if value is None else value * 100
+
+    def _discard_day(
+        self,
+        timestamp: datetime,
+        price: float,
+        outcome: str,
+        extra_details: dict | None = None,
+    ) -> None:
         if self.done:
             return
         if self.setup is not None:
             self.setup.outcome = outcome
+        details = {"setup_number": self.attempts, "outcome": outcome}
+        if extra_details:
+            details.update(extra_details)
         self.emit(
             timestamp,
             "SETUP_FAILED",
             price,
-            {"setup_number": self.attempts, "outcome": outcome},
+            details,
         )
         self.state = "DONE"
 

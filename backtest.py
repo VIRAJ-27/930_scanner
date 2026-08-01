@@ -20,7 +20,13 @@ MARKET_EXIT = time(15, 15)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backtest the 9:30 scanner.")
     parser.add_argument("--base-data", type=Path, required=True)
-    parser.add_argument("--supplement", type=Path)
+    parser.add_argument(
+        "--supplement",
+        type=Path,
+        action="append",
+        default=[],
+        help="Additional data folder; repeat for multiple date supplements.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--start", default="2026-04-01")
     parser.add_argument("--end", default=date.today().isoformat())
@@ -31,8 +37,8 @@ def parse_args() -> argparse.Namespace:
 
 def load_symbol(symbol, base_data, supplement, start, end):
     paths = [base_data / f"{safe_name(symbol)}_1m.csv"]
-    if supplement:
-        paths.append(supplement / f"{safe_name(symbol)}_1m.csv")
+    for folder in supplement or []:
+        paths.append(folder / f"{safe_name(symbol)}_1m.csv")
     frames = []
     for path in paths:
         if not path.exists():
@@ -117,6 +123,8 @@ def backtest_day(
     minute_frame: pd.DataFrame,
     three_frame: pd.DataFrame | None = None,
     five_frame: pd.DataFrame | None = None,
+    ema20_1m_history: list[float] | None = None,
+    ema20_3m_history: list[float] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     events = []
 
@@ -136,6 +144,12 @@ def backtest_day(
         )
 
     strategy = ScannerStrategy(symbol, emit)
+    initial_ema20_1m = list(ema20_1m_history or [])
+    initial_ema20_3m = list(ema20_3m_history or [])
+    if ema20_1m_history is not None:
+        strategy.ema20_1m = ema20_1m_history
+    if ema20_3m_history is not None:
+        strategy.ema20_3m = ema20_3m_history
     three = three_frame if three_frame is not None else make_timeframe(minute_frame, 3)
     five = five_frame if five_frame is not None else make_timeframe(minute_frame, 5)
     three_by_end = {
@@ -259,6 +273,20 @@ def backtest_day(
         exit_time = last["Datetime"].to_pydatetime() + timedelta(minutes=1)
         strategy.mark_closed(exit_time, float(last["Close"]), "DATA_END_EXIT")
         trades.append(finalize_record(active, position))
+
+    # The strategy stops looking for setups after its one allowed attempt, but
+    # continuous EMA history must still consume every completed candle so the
+    # next trading session starts from the correct value.
+    if ema20_1m_history is not None:
+        ema20_1m_history.clear()
+        ema20_1m_history.extend(initial_ema20_1m)
+        for close in minute_frame["Close"]:
+            ScannerStrategy._append_ema(ema20_1m_history, float(close))
+    if ema20_3m_history is not None:
+        ema20_3m_history.clear()
+        ema20_3m_history.extend(initial_ema20_3m)
+        for close in three["Close"]:
+            ScannerStrategy._append_ema(ema20_3m_history, float(close))
     return trades, events
 
 
@@ -290,6 +318,22 @@ def new_trade_record(trading_day, position, trigger, g1, setup, entry_minute):
         "Symbol": position.symbol,
         "SetupNumber": 1,
         "EntryMode": position.entry_mode,
+        "EntryTier": position.entry_tier,
+        "EMA3mRisePercent": (
+            None
+            if position.ema_3m_rise_fraction is None
+            else position.ema_3m_rise_fraction * 100
+        ),
+        "EMA1mRisePercent": (
+            None
+            if position.ema_1m_rise_fraction is None
+            else position.ema_1m_rise_fraction * 100
+        ),
+        "G1BodyPercent": (
+            None
+            if position.g1_body_fraction is None
+            else position.g1_body_fraction * 100
+        ),
         **candle_fields("Trigger", trigger),
         "TriggerRangePercent": setup.trigger_range_fraction * 100,
         "EPPercent": setup.ep_fraction * 100,
@@ -422,14 +466,36 @@ def main():
     for sequence, (_, row) in enumerate(universe.iterrows(), start=1):
         symbol = str(row["Symbol"]).strip().upper()
         try:
-            minute = load_symbol(symbol, args.base_data, args.supplement, start, end)
+            minute_all = load_symbol(
+                symbol,
+                args.base_data,
+                args.supplement,
+                pd.Timestamp("1900-01-01", tz="Asia/Kolkata"),
+                end,
+            )
+            minute = minute_all[minute_all["Datetime"] >= start].copy()
             if minute.empty:
                 coverage.append({"Symbol": symbol, "Status": "NO_DATA"})
                 continue
-            three_all = make_timeframe(minute, 3)
+            three_with_history = make_timeframe(minute_all, 3)
+            three_all = three_with_history[
+                three_with_history["Datetime"] >= start
+            ].copy()
             five_all = make_timeframe(minute, 5)
             three_groups = {d: g.copy() for d, g in three_all.groupby(three_all["Datetime"].dt.date)}
             five_groups = {d: g.copy() for d, g in five_all.groupby(five_all["Datetime"].dt.date)}
+            ema20_1m_history: list[float] = []
+            ema20_3m_history: list[float] = []
+            for close in minute_all.loc[
+                minute_all["Datetime"] < start,
+                "Close",
+            ]:
+                ScannerStrategy._append_ema(ema20_1m_history, float(close))
+            for close in three_with_history.loc[
+                three_with_history["Completion"] <= start,
+                "Close",
+            ]:
+                ScannerStrategy._append_ema(ema20_3m_history, float(close))
             symbol_trades, symbol_events = [], []
             for trading_day, day_frame in minute.groupby(minute["Datetime"].dt.date):
                 day_frame = day_frame[
@@ -442,6 +508,8 @@ def main():
                     day_frame,
                     three_groups.get(trading_day),
                     five_groups.get(trading_day),
+                    ema20_1m_history,
+                    ema20_3m_history,
                 )
                 symbol_trades.extend(trades)
                 symbol_events.extend(events)
@@ -470,6 +538,10 @@ def main():
     if not events.empty:
         events = events.sort_values(["EventTime", "Symbol"]).reset_index(drop=True)
     summarize(trades, "Month").to_csv(args.output / "MonthlySummary.csv", index=False)
+    summarize(trades, "EntryTier").to_csv(
+        args.output / "EntryTierSummary.csv",
+        index=False,
+    )
     summarize(trades, "Date").to_csv(args.output / "DailySummary.csv", index=False)
     summarize(trades, "Symbol").to_csv(args.output / "StockSummary.csv", index=False)
     trades.to_csv(args.output / "Trades.csv", index=False)
@@ -494,11 +566,16 @@ def main():
         "NetRR": round(float(rr.sum()), 4),
         "AverageRR": round(float(rr.mean()), 4) if len(rr) else 0,
         "TP1Trades": int(trades["TP1ExitTime"].fillna("").astype(bool).sum()) if len(trades) else 0,
+        "NormalTrades": int((trades.get("EntryTier", "") == "NORMAL").sum()) if len(trades) else 0,
+        "SilverTrades": int((trades.get("EntryTier", "") == "SILVER").sum()) if len(trades) else 0,
         "Notes": [
             "HLC3 session VWAP resets at 09:15 IST.",
             "The first red 3m Trigger among 09:30, 09:33 and 09:36 uses the unchanged validation rules.",
             "G1 is the first green candle in the next three 1m candles.",
             "Entry is a strict G1-high break in any of the next three 1m candles.",
+            "Silver: completed 1m EMA20 rises at least 0.116% over five candles and G1 body is at least 57.9% of range.",
+            "Normal: when Silver fails, completed 3m EMA20 rises at least 0.01% over two candles.",
+            "Silver has precedence; entries passing neither tier are discarded.",
             "Trigger/G1-low breaks before entry discard the stock.",
             "EP is Trigger range x1.4 below 0.50%, otherwise range +0.10 percentage points.",
             "TP1 is min(R1 from Trigger high, R2 at 3R from entry/Trigger low).",

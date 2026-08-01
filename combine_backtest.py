@@ -48,6 +48,11 @@ def main() -> None:
         coverage = coverage.sort_values("Symbol").reset_index(drop=True)
 
     monthly = summarize(trades, "Month")
+    tier = (
+        summarize(trades, "EntryTier")
+        if "EntryTier" in trades.columns
+        else pd.DataFrame()
+    )
     daily = summarize(trades, "Date")
     stock = summarize(trades, "Symbol")
     trades.to_csv(args.output / "Trades.csv", index=False)
@@ -67,6 +72,7 @@ def main() -> None:
     )
     event_summary.to_csv(args.output / "EventSummary.csv", index=False)
     monthly.to_csv(args.output / "MonthlySummary.csv", index=False)
+    tier.to_csv(args.output / "EntryTierSummary.csv", index=False)
     daily.to_csv(args.output / "DailySummary.csv", index=False)
     stock.to_csv(args.output / "StockSummary.csv", index=False)
     coverage.to_csv(args.output / "Coverage.csv", index=False)
@@ -100,6 +106,16 @@ def main() -> None:
                 "Entry",
                 "Strict G1-high break in any of the next three 1m candles; "
                 "G1/Trigger-low break first discards",
+            ),
+            (
+                "Silver tier",
+                "Completed 1m EMA20 rises at least 0.116% over five candles "
+                "and G1 body is at least 57.9% of its range",
+            ),
+            (
+                "Normal tier",
+                "If Silver fails, completed 3m EMA20 rises at least 0.01% "
+                "over two candles; entries passing neither tier are discarded",
             ),
             (
                 "EP and R1",
@@ -156,6 +172,16 @@ def main() -> None:
         "TP1Trades": (
             int(trades["TP1ExitTime"].fillna("").astype(bool).sum())
             if not trades.empty
+            else 0
+        ),
+        "NormalTrades": (
+            int((trades["EntryTier"] == "NORMAL").sum())
+            if "EntryTier" in trades.columns
+            else 0
+        ),
+        "SilverTrades": (
+            int((trades["EntryTier"] == "SILVER").sum())
+            if "EntryTier" in trades.columns
             else 0
         ),
         "R1TargetTrades": (

@@ -32,6 +32,21 @@ window, discard the stock for the day.
 - A strict G1-low or Trigger-low break before entry discards the stock.
 - If none of those three candles breaks G1 high, discard the stock.
 
+Before accepting the G1-high break, classify the setup using completed candles
+only:
+
+- **Silver**: the 1-minute EMA20 has risen at least 0.116% over the previous
+  five completed 1-minute candles, and G1's real body is at least 57.9% of its
+  high-low range.
+- **Normal**: if Silver fails, the 3-minute EMA20 has risen at least 0.01% over
+  the previous two completed 3-minute candles.
+- Silver has precedence when both conditions pass. If neither tier passes,
+  discard the stock for the day.
+
+EMA20 is continuous across trading sessions. Backtests warm it with all
+available candles before the requested start date, and a continuously running
+live process preserves its completed-candle EMA history across day resets.
+
 The backtest uses one NSE tick above G1 high and assumes the low-side failure
 occurs first when both sides are present in the same 1-minute OHLC candle.
 

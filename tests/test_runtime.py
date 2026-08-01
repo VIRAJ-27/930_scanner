@@ -41,6 +41,8 @@ class RuntimeTests(unittest.TestCase):
 
     def prepare_entry(self):
         strategy = self.runtime.strategy
+        strategy.on_three_minute(self.c3("09:21", 99.2, 99.8, 99.1, 99.7))
+        strategy.on_three_minute(self.c3("09:24", 99.6, 100.1, 99.5, 100.0))
         strategy.on_three_minute(self.c3("09:27", 99.8, 100.5, 99.7, 100.3))
         strategy.on_three_minute(self.c3("09:30", 100.35, 100.4, 100, 100.2))
         strategy.on_one_minute(
@@ -102,6 +104,43 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(api.params["producttype"], "INTRADAY")
         self.assertEqual(api.params["quantity"], "100")
         self.assertEqual(rows[-1], ("FILLED", 105.25))
+
+    def test_day_reset_preserves_completed_candle_ema_history(self):
+        self.runtime.strategy.ema20_1m = [100.0, 100.1]
+        self.runtime.strategy.ema20_3m = [99.8, 100.0]
+        self.runtime.reset_day(dt("09:15:00").date())
+        self.assertEqual(self.runtime.strategy.ema20_1m, [100.0, 100.1])
+        self.assertEqual(self.runtime.strategy.ema20_3m, [99.8, 100.0])
+
+    def test_prior_session_closes_are_available_for_ema_warmup(self):
+        prior = Candle(
+            "TEST",
+            1,
+            datetime.fromisoformat("2026-07-31T15:29:00").replace(tzinfo=IST),
+            99.0,
+            100.5,
+            98.5,
+            100.0,
+            10,
+        )
+        current = Candle(
+            "TEST",
+            1,
+            dt("09:15:00"),
+            100.0,
+            101.0,
+            99.5,
+            100.5,
+            10,
+        )
+        self.store.save_candle(prior)
+        self.store.save_candle(current)
+        closes = self.store.load_completed_closes(
+            "TEST",
+            "1m",
+            dt("09:15:00").date(),
+        )
+        self.assertEqual(closes, [100.0])
 
 
 if __name__ == "__main__":

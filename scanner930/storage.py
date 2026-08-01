@@ -5,7 +5,7 @@ import queue
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS trades (
     setup_number INTEGER NOT NULL,
     entry_time TEXT NOT NULL,
     entry_price REAL NOT NULL,
+    entry_tier TEXT NOT NULL DEFAULT '',
     quantity INTEGER NOT NULL,
     initial_sl REAL NOT NULL,
     tp1_target REAL NOT NULL,
@@ -194,6 +195,27 @@ class SQLiteStore:
             ),
         )
 
+    def load_completed_closes(
+        self,
+        symbol: str,
+        timeframe: str,
+        before_date: date,
+        limit: int = 500,
+    ) -> list[float]:
+        """Return prior-session closes oldest-first for indicator warm-up."""
+        self.flush()
+        connection = sqlite3.connect(self.path)
+        rows = connection.execute(
+            """
+            SELECT close FROM candles
+            WHERE symbol=? AND timeframe=? AND start_ts < ?
+            ORDER BY start_ts DESC LIMIT ?
+            """,
+            (symbol, timeframe, before_date.isoformat(), int(limit)),
+        ).fetchall()
+        connection.close()
+        return [float(row[0]) for row in reversed(rows)]
+
     def save_event(
         self,
         timestamp: datetime,
@@ -241,9 +263,9 @@ class SQLiteStore:
             """
             INSERT OR REPLACE INTO trades(
                 trade_id, trading_date, symbol, setup_number, entry_time,
-                entry_price, quantity, initial_sl, tp1_target, tp1_quantity,
+                entry_price, entry_tier, quantity, initial_sl, tp1_target, tp1_quantity,
                 final_exit_quantity, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 position.trade_id,
@@ -252,6 +274,7 @@ class SQLiteStore:
                 position.setup_number,
                 position.entry_time.isoformat(),
                 position.entry_price,
+                position.entry_tier,
                 QUANTITY,
                 position.initial_sl,
                 position.tp1_target or 0.0,
@@ -367,6 +390,10 @@ class SQLiteStore:
             row[1] for row in connection.execute("PRAGMA table_info(trades)")
         }
         migrations = {
+            "entry_tier": (
+                "ALTER TABLE trades ADD COLUMN "
+                "entry_tier TEXT NOT NULL DEFAULT ''"
+            ),
             "tp2_target": "ALTER TABLE trades ADD COLUMN tp2_target REAL",
             "tp2_touch_time": "ALTER TABLE trades ADD COLUMN tp2_touch_time TEXT",
             "tp2_exit_time": "ALTER TABLE trades ADD COLUMN tp2_exit_time TEXT",
