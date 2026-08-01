@@ -16,7 +16,7 @@ concurrency:
 jobs:
   paper-trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 130
     env:
       TZ: Asia/Kolkata
       API_KEY: ${{ secrets.API_KEY }}
@@ -44,11 +44,13 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run option paper scanner until 11:00 IST
+      - name: Close positions at 11:00 and report at 11:15 IST
         run: >-
           python run_scanner.py --option-paper
-          --stop-at 11:00
-          --stop-reason TIME_EXIT_11_00
+          --force-exit-at 11:00
+          --force-exit-reason TIME_EXIT_11_00
+          --stop-at 11:15
+          --stop-reason REPORT_COMPLETE_11_15
 
       - name: Preserve daily reports
         if: always()
