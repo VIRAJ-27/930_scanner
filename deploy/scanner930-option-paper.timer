@@ -1,0 +1,11 @@
+[Unit]
+Description=Start Scanner930 option paper trader each NSE weekday
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:10:00 Asia/Kolkata
+Unit=scanner930-option-paper.service
+Persistent=false
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

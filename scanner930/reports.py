@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -10,18 +11,51 @@ from openpyxl.utils import get_column_letter
 
 
 QUERIES = {
+    "OptionTradeBook": """
+        SELECT trade_id, trading_date, symbol, entry_tier, option_symbol,
+               expiry, strike, lot_size, paper_lots, paper_quantity,
+               entry_time, underlying_entry_price, underlying_initial_sl,
+               underlying_tp1_target, entry_quote_time, entry_option_ltp,
+               entry_option_bid, entry_option_ask, entry_spread_percent,
+               tp1_exit_time, tp1_underlying_price, tp1_option_bid,
+               tp1_quantity, remaining_quantity, final_exit_time,
+               final_underlying_price, final_option_bid, final_quantity,
+               final_exit_reason, realized_pnl, option_return_percent,
+               status, error
+        FROM option_paper_trades
+        WHERE trading_date=(SELECT MAX(trading_date) FROM daily_status)
+        ORDER BY entry_time
+    """,
     "TradeBook": """
         SELECT trade_id, trading_date, symbol, setup_number, entry_time,
                entry_price, entry_tier, quantity, initial_sl, tp1_target, tp1_touch_time,
                tp1_exit_time, tp1_exit_price, tp1_quantity,
                final_exit_time, final_exit_price, final_exit_quantity,
                final_exit_reason, realized_pnl, status
-        FROM trades ORDER BY entry_time
+        FROM trades
+        WHERE trading_date=(SELECT MAX(trading_date) FROM daily_status)
+        ORDER BY entry_time
     """,
-    "SetupLedger": "SELECT * FROM setups ORDER BY event_ts, id",
-    "OrderBook": "SELECT * FROM orders ORDER BY requested_ts, id",
-    "LiveEvents": "SELECT * FROM events ORDER BY event_ts, id",
-    "CompletedCandles": "SELECT * FROM candles ORDER BY start_ts, symbol, timeframe",
+    "SetupLedger": """
+        SELECT * FROM setups
+        WHERE trading_date=(SELECT MAX(trading_date) FROM daily_status)
+        ORDER BY event_ts, id
+    """,
+    "OrderBook": """
+        SELECT * FROM orders
+        WHERE substr(requested_ts,1,10)=(SELECT MAX(trading_date) FROM daily_status)
+        ORDER BY requested_ts, id
+    """,
+    "LiveEvents": """
+        SELECT * FROM events
+        WHERE substr(event_ts,1,10)=(SELECT MAX(trading_date) FROM daily_status)
+        ORDER BY event_ts, id
+    """,
+    "CompletedCandles": """
+        SELECT * FROM candles
+        WHERE substr(start_ts,1,10)=(SELECT MAX(trading_date) FROM daily_status)
+        ORDER BY start_ts, symbol, timeframe
+    """,
     "LiveStatus": "SELECT * FROM daily_status ORDER BY trading_date",
     "DailySummary": """
         SELECT trading_date, COUNT(*) AS trades,
@@ -35,6 +69,25 @@ QUERIES = {
                SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS winners,
                ROUND(SUM(COALESCE(realized_pnl, 0)), 2) AS realized_pnl
         FROM trades GROUP BY symbol ORDER BY symbol
+    """,
+    "OptionDailySummary": """
+        SELECT trading_date,
+               SUM(CASE WHEN status!='REJECTED' THEN 1 ELSE 0 END) AS entries,
+               SUM(CASE WHEN status='REJECTED' THEN 1 ELSE 0 END) AS rejected,
+               SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS winners,
+               SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END) AS losers,
+               ROUND(SUM(COALESCE(realized_pnl, 0)), 2) AS realized_pnl
+        FROM option_paper_trades
+        GROUP BY trading_date ORDER BY trading_date
+    """,
+    "OptionStockSummary": """
+        SELECT symbol,
+               SUM(CASE WHEN status!='REJECTED' THEN 1 ELSE 0 END) AS entries,
+               SUM(CASE WHEN status='REJECTED' THEN 1 ELSE 0 END) AS rejected,
+               SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) AS winners,
+               ROUND(SUM(COALESCE(realized_pnl, 0)), 2) AS realized_pnl
+        FROM option_paper_trades
+        GROUP BY symbol ORDER BY symbol
     """,
 }
 
@@ -55,6 +108,10 @@ def export_reports(database_path: Path, output_dir: Path) -> None:
             writer.writerow(headers)
             writer.writerows(rows)
 
+        # Completed candles can exceed 100k rows per day. Keep the auditable
+        # CSV locally without inflating the emailed dashboard workbook.
+        if name == "CompletedCandles":
+            continue
         sheet = workbook.create_sheet(name[:31])
         sheet.append(headers)
         for row in rows:
@@ -74,29 +131,32 @@ def export_reports(database_path: Path, output_dir: Path) -> None:
         )
 
     dashboard = workbook.create_sheet("Dashboard", 0)
-    dashboard["A1"] = "9:30 VWAP Equity Scanner"
+    dashboard["A1"] = "9:30 Normal/Silver Option Paper Scanner"
     dashboard["A1"].font = Font(size=18, bold=True, color="FFFFFF")
     dashboard["A1"].fill = PatternFill("solid", fgColor="17365D")
     dashboard.merge_cells("A1:H1")
     dashboard.append([])
     dashboard.append(
         [
-            "Total Trades",
+            "Option Entries",
             None,
             "Winners",
             None,
-            "Realized P&L",
+            "Option P&L",
             None,
             "Open Positions",
             None,
         ]
     )
-    dashboard["B3"] = "=COUNTA('TradeBook'!$A$2:$A$100000)"
-    dashboard["D3"] = '=COUNTIF(\'TradeBook\'!$S$2:$S$100000,">0")'
-    dashboard["F3"] = "=SUM('TradeBook'!$S$2:$S$100000)"
+    dashboard["B3"] = (
+        '=COUNTIFS(\'OptionTradeBook\'!$A$2:$A$100000,"<>",'
+        '\'OptionTradeBook\'!$AF$2:$AF$100000,"<>REJECTED")'
+    )
+    dashboard["D3"] = '=COUNTIF(\'OptionTradeBook\'!$AD$2:$AD$100000,">0")'
+    dashboard["F3"] = "=SUM('OptionTradeBook'!$AD$2:$AD$100000)"
     dashboard["H3"] = (
-        "=IFERROR(LOOKUP(2,1/('LiveStatus'!$G$2:$G$1000<>\"\"),"
-        "'LiveStatus'!$G$2:$G$1000),0)"
+        '=COUNTIF(\'OptionTradeBook\'!$AF$2:$AF$100000,"OPEN")+'
+        'COUNTIF(\'OptionTradeBook\'!$AF$2:$AF$100000,"RUNNER_OPEN")'
     )
     dashboard.append([])
     dashboard.append(
@@ -123,15 +183,20 @@ def export_reports(database_path: Path, output_dir: Path) -> None:
     dashboard.append([])
     dashboard.append(["Report", "Purpose"])
     dashboard.append(
+        ["OptionTradeBook", "Executed/rejected option paper trades and premium P&L"]
+    )
+    dashboard.append(
         ["TradeBook", "Normal/Silver G1-high entries, TP1, runners and P&L"]
     )
     dashboard.append(["SetupLedger", "Each Trigger/G1/entry-window outcome"])
     dashboard.append(["OrderBook", "Paper/live broker-order audit trail"])
     dashboard.append(["LiveEvents", "Full chronological strategy event log"])
-    dashboard.append(["CompletedCandles", "All completed 1m/3m OHLCV and 3m VWAP"])
+    dashboard.append(["CompletedCandles", "Local CSV: completed 1m/3m OHLCV and VWAP"])
     dashboard.append(["LiveStatus", "Connection, position and P&L health"])
     dashboard.append(["DailySummary", "Daily trade and P&L totals"])
     dashboard.append(["StockSummary", "Per-stock trade and P&L totals"])
+    dashboard.append(["OptionDailySummary", "Daily option entries, rejects and P&L"])
+    dashboard.append(["OptionStockSummary", "Per-stock option premium results"])
     for cell in dashboard[3]:
         cell.fill = PatternFill("solid", fgColor="D9EAF7")
         cell.font = Font(bold=True, color="17365D")
@@ -159,6 +224,36 @@ def export_reports(database_path: Path, output_dir: Path) -> None:
     workbook.calculation.calcMode = "auto"
     workbook.save(output_dir / "Scanner930_Dashboard.xlsx")
     connection.close()
+
+
+def option_daily_message(database_path: Path, trading_day: date) -> str:
+    connection = sqlite3.connect(database_path)
+    row = connection.execute(
+        """
+        SELECT
+            SUM(CASE WHEN status!='REJECTED' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='REJECTED' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN realized_pnl < 0 THEN 1 ELSE 0 END),
+            COALESCE(SUM(realized_pnl), 0),
+            SUM(CASE WHEN status IN ('OPEN','RUNNER_OPEN') THEN 1 ELSE 0 END)
+        FROM option_paper_trades WHERE trading_date=?
+        """,
+        (trading_day.isoformat(),),
+    ).fetchone()
+    connection.close()
+    entries, rejected, winners, losers, pnl, open_positions = [
+        value or 0 for value in row
+    ]
+    return (
+        f"9:30 option paper report — {trading_day.isoformat()}\n"
+        f"Entries: {int(entries)} | Rejected: {int(rejected)}\n"
+        f"Winners: {int(winners)} | Losers: {int(losers)}\n"
+        f"Realized option P&L: ₹{float(pnl):,.2f}\n"
+        f"Unresolved option positions: {int(open_positions)}\n"
+        "Signals and exits are based on the underlying stock. "
+        "Premium fills use ask for entry and bid for exit."
+    )
 
 
 def _format_sheet(sheet, filter_table: bool = True) -> None:

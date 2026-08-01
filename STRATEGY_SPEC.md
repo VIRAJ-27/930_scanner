@@ -88,3 +88,20 @@ If entry itself is already at or above TP1, TP1 is considered touched and the
 
 Monthly NetRR is the sum of trade NetRR. Backtest reports exclude brokerage,
 taxes, exchange fees and slippage.
+
+## Option paper overlay
+
+- Trigger, G1, entry, SL, TP1, trailing and 15:15 exit decisions remain based
+  exclusively on the underlying stock.
+- Use the nearest unexpired monthly stock CE.
+- For strike gaps below ₹10, choose the mathematically nearest strike; ties
+  choose the lower strike.
+- For strike gaps of ₹10 or more, calculate progress from the lower strike to
+  the upper strike. Choose the upper strike only at 75% progress or higher;
+  otherwise choose the lower strike.
+- Paper entry fills at the best ask and exits fill at the best bid.
+- Reject missing/stale quotes and entry spreads above 5%.
+- The initial evaluation uses one lot-equivalent with the stock strategy's
+  70% TP1 and 30% runner split applied proportionally. This normalized split
+  is not necessarily executable with one real exchange lot.
+- The option overlay cannot submit live option orders.

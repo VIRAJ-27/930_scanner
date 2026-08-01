@@ -125,6 +125,45 @@ CREATE TABLE IF NOT EXISTS daily_status (
     realized_pnl REAL NOT NULL,
     last_error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS option_paper_trades (
+    trade_id TEXT PRIMARY KEY,
+    trading_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    entry_tier TEXT NOT NULL DEFAULT '',
+    option_symbol TEXT,
+    option_token TEXT,
+    expiry TEXT,
+    strike REAL,
+    lot_size INTEGER,
+    paper_lots INTEGER,
+    paper_quantity REAL,
+    entry_time TEXT NOT NULL,
+    underlying_entry_price REAL NOT NULL,
+    underlying_initial_sl REAL,
+    underlying_tp1_target REAL,
+    entry_quote_time TEXT,
+    entry_option_ltp REAL,
+    entry_option_bid REAL,
+    entry_option_ask REAL,
+    entry_spread_percent REAL,
+    tp1_exit_time TEXT,
+    tp1_underlying_price REAL,
+    tp1_option_bid REAL,
+    tp1_quantity REAL NOT NULL DEFAULT 0,
+    remaining_quantity REAL NOT NULL DEFAULT 0,
+    final_exit_time TEXT,
+    final_underlying_price REAL,
+    final_option_bid REAL,
+    final_quantity REAL NOT NULL DEFAULT 0,
+    final_exit_reason TEXT,
+    realized_pnl REAL,
+    option_return_percent REAL,
+    status TEXT NOT NULL,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_option_paper_date
+ON option_paper_trades(trading_date, entry_time);
 """
 
 
@@ -382,6 +421,154 @@ class SQLiteStore:
                 status.get("last_error"),
             ),
         )
+
+    def insert_option_trade(self, position, stock_position) -> None:
+        quote = position.entry_quote
+        instrument = position.instrument
+        self.execute(
+            """
+            INSERT OR REPLACE INTO option_paper_trades(
+                trade_id, trading_date, symbol, entry_tier, option_symbol,
+                option_token, expiry, strike, lot_size, paper_lots,
+                paper_quantity, entry_time, underlying_entry_price,
+                underlying_initial_sl, underlying_tp1_target, entry_quote_time,
+                entry_option_ltp, entry_option_bid, entry_option_ask,
+                entry_spread_percent, tp1_quantity, remaining_quantity,
+                status, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                position.trade_id,
+                position.entry_time.date().isoformat(),
+                position.underlying,
+                position.entry_tier,
+                instrument.trading_symbol,
+                instrument.token,
+                instrument.expiry.isoformat(),
+                instrument.strike,
+                instrument.lot_size,
+                position.paper_lots,
+                position.paper_quantity,
+                position.entry_time.isoformat(),
+                position.underlying_entry,
+                stock_position.initial_sl,
+                stock_position.tp1_target,
+                quote.quote_time.isoformat(),
+                quote.ltp,
+                quote.bid,
+                quote.ask,
+                quote.spread_fraction * 100,
+                position.tp1_quantity,
+                position.remaining_quantity,
+                "OPEN",
+                None,
+            ),
+        )
+
+    def insert_option_rejection(
+        self,
+        timestamp: datetime,
+        stock_position,
+        details: dict[str, Any],
+    ) -> None:
+        self.execute(
+            """
+            INSERT OR REPLACE INTO option_paper_trades(
+                trade_id, trading_date, symbol, entry_tier, option_symbol,
+                entry_time, underlying_entry_price, underlying_initial_sl,
+                underlying_tp1_target, status, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'REJECTED', ?)
+            """,
+            (
+                stock_position.trade_id,
+                timestamp.date().isoformat(),
+                stock_position.symbol,
+                stock_position.entry_tier,
+                details.get("option_symbol") or None,
+                timestamp.isoformat(),
+                stock_position.entry_price,
+                stock_position.initial_sl,
+                stock_position.tp1_target,
+                f"{details.get('outcome', '')}: {details.get('error', '')}".strip(),
+            ),
+        )
+
+    def update_option_tp1(self, position, underlying_price: float, quote) -> None:
+        self.execute(
+            """
+            UPDATE option_paper_trades SET tp1_exit_time=?,
+                tp1_underlying_price=?, tp1_option_bid=?,
+                remaining_quantity=?, status='RUNNER_OPEN'
+            WHERE trade_id=?
+            """,
+            (
+                position.tp1_exit_time.isoformat(),
+                underlying_price,
+                quote.bid,
+                position.remaining_quantity,
+                position.trade_id,
+            ),
+        )
+
+    def close_option_trade(self, position, underlying_price: float, quote) -> None:
+        tp1_pnl = (
+            (position.tp1_option_price - position.option_entry_price)
+            * position.tp1_quantity
+            if position.tp1_option_price is not None
+            else 0.0
+        )
+        final_quantity = position.remaining_quantity
+        final_pnl = (
+            (quote.bid - position.option_entry_price) * final_quantity
+        )
+        realized = round(tp1_pnl + final_pnl, 2)
+        capital = position.option_entry_price * position.paper_quantity
+        option_return = realized / capital * 100 if capital > 0 else None
+        self.execute(
+            """
+            UPDATE option_paper_trades SET final_exit_time=?,
+                final_underlying_price=?, final_option_bid=?, final_quantity=?,
+                final_exit_reason=?, realized_pnl=?, option_return_percent=?,
+                remaining_quantity=0, status='CLOSED'
+            WHERE trade_id=?
+            """,
+            (
+                position.final_exit_time.isoformat(),
+                underlying_price,
+                quote.bid,
+                final_quantity,
+                position.final_exit_reason,
+                realized,
+                option_return,
+                position.trade_id,
+            ),
+        )
+
+    def load_open_option_trades(self) -> list[sqlite3.Row]:
+        self.flush()
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT * FROM option_paper_trades
+            WHERE status IN ('OPEN', 'RUNNER_OPEN')
+            ORDER BY entry_time
+            """
+        ).fetchall()
+        connection.close()
+        return rows
+
+    def option_realized_pnl(self) -> float:
+        self.flush()
+        connection = sqlite3.connect(self.path)
+        value = connection.execute(
+            """
+            SELECT COALESCE(SUM(realized_pnl), 0)
+            FROM option_paper_trades WHERE status='CLOSED'
+            """
+        ).fetchone()[0]
+        connection.close()
+        return round(float(value or 0.0), 2)
 
     def _writer(self) -> None:
         connection = sqlite3.connect(self.path)

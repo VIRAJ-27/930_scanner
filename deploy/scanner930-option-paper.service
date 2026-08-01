@@ -1,0 +1,25 @@
+[Unit]
+Description=Scanner930 underlying-driven option paper trader
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=scanner930
+Group=scanner930
+WorkingDirectory=/opt/scanner930
+EnvironmentFile=/etc/scanner930/scanner930.env
+ExecStart=/opt/scanner930/.venv/bin/python /opt/scanner930/run_scanner.py --option-paper
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=90
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/scanner930/LiveData /opt/scanner930/LiveReports /opt/scanner930/logs
+
+[Install]
+WantedBy=multi-user.target

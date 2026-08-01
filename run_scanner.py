@@ -19,11 +19,18 @@ from scanner930.config import (
     LIVE_APPROVAL_PHRASE,
     REPORT_DIR,
     REPORT_REFRESH_SECONDS,
+    SERVICE_STOP,
     SINGLE_INSTANCE_PORT,
     TIMEZONE,
 )
 from scanner930.instruments import EquityCatalog, download_instrument_master
-from scanner930.reports import export_reports
+from scanner930.notifications import NotificationService
+from scanner930.option_paper import (
+    OptionCatalog,
+    OptionPaperExecutor,
+    SmartApiOptionQuoteProvider,
+)
+from scanner930.reports import export_reports, option_daily_message
 from scanner930.runtime import LiveTradingSystem
 from scanner930.storage import SQLiteStore
 
@@ -33,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--paper", action="store_true")
     mode.add_argument("--live", action="store_true")
+    mode.add_argument("--option-paper", action="store_true")
     parser.add_argument("--confirm-live", default="")
     return parser.parse_args()
 
@@ -110,7 +118,7 @@ def main() -> None:
     args = parse_args()
     validate_live_approval(args)
     instance_lock = acquire_lock()
-    mode = "LIVE" if args.live else "PAPER"
+    mode = "LIVE" if args.live else ("OPTION_PAPER" if args.option_paper else "PAPER")
     ist = ZoneInfo(TIMEZONE)
 
     master = download_instrument_master(INSTRUMENT_MASTER_PATH)
@@ -119,11 +127,24 @@ def main() -> None:
     session = AngelSession()
     print("Logging into Angel One; credentials and tokens are suppressed.")
     session.login()
-    broker = EquityBroker(store, mode, session.smart_api)
-    system = LiveTradingSystem(catalog, store, broker)
+    notifier = NotificationService()
+    broker = EquityBroker(store, "LIVE" if args.live else "PAPER", session.smart_api)
+    option_executor = None
+    if args.option_paper:
+        option_catalog = OptionCatalog(master)
+        option_executor = OptionPaperExecutor(
+            option_catalog,
+            SmartApiOptionQuoteProvider(session.smart_api),
+            store,
+            notify=notifier.send_text,
+        )
+        if not option_catalog.by_underlying:
+            raise RuntimeError("No current NFO stock call options were mapped.")
+    system = LiveTradingSystem(catalog, store, broker, option_executor)
     replayed = replay_today(DATABASE_PATH, system, datetime.now(ist).date())
     if replayed:
         print(f"Recovered state from {replayed:,} stored ticks.")
+        system.reconcile_option_positions(datetime.now(ist))
     market_data = AngelMarketData(session, catalog, system)
 
     stop_event = threading.Event()
@@ -131,12 +152,32 @@ def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: stop_event.set())
     worker = threading.Thread(target=market_data.connect, daemon=True)
     worker.start()
+    notifier.send_text(
+        f"Scanner930 started in {mode} mode. Monitoring "
+        f"{len(catalog.by_token)} F&O stocks; entries remain strategy-controlled."
+    )
 
     last_report = 0.0
+    health_alert_sent = False
     try:
         while not stop_event.wait(1):
             now = datetime.now(ist)
             system.advance_clock(now)
+            if now.time() >= SERVICE_STOP:
+                break
+            if (
+                not health_alert_sent
+                and now.time() >= datetime.strptime("09:35", "%H:%M").time()
+                and (
+                    system.last_tick_ts is None
+                    or (now - system.last_tick_ts).total_seconds() > 120
+                )
+            ):
+                notifier.send_text(
+                    "Scanner930 health warning: no recent underlying tick "
+                    "after 09:35 IST. Check broker session/network."
+                )
+                health_alert_sent = True
             if time.monotonic() - last_report >= REPORT_REFRESH_SECONDS:
                 store.save_status(
                     {
@@ -160,7 +201,6 @@ def main() -> None:
                     }
                 )
                 store.flush()
-                export_reports(DATABASE_PATH, REPORT_DIR)
                 last_report = time.monotonic()
     finally:
         now = datetime.now(ist)
@@ -169,6 +209,18 @@ def main() -> None:
         broker.close()
         store.flush()
         export_reports(DATABASE_PATH, REPORT_DIR)
+        if args.option_paper:
+            summary = option_daily_message(DATABASE_PATH, now.date())
+            notifier.send_report(
+                f"Scanner930 option paper report {now.date().isoformat()}",
+                summary,
+                [
+                    REPORT_DIR / "Scanner930_Dashboard.xlsx",
+                    REPORT_DIR / "OptionTradeBook.csv",
+                    REPORT_DIR / "OptionDailySummary.csv",
+                ],
+            )
+        notifier.close()
         store.close()
         instance_lock.close()
         print("9:30 scanner stopped; open paper/live positions were squared off.")
@@ -176,4 +228,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

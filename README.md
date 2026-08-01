@@ -9,6 +9,20 @@ R1 level and the entry-based 3R R2 level.
 
 See `STRATEGY_SPEC.md` for all confirmed entry, stop, exit and reporting rules.
 
+## Automated option paper mode
+
+`--option-paper` keeps every signal, stop, TP1 and trailing decision on the
+underlying stock, while paper-filling the selected current-expiry stock CE at
+best ask and exiting at best bid. Quotes that are stale, missing or wider than
+the configured maximum spread are rejected rather than estimated.
+
+```powershell
+python run_scanner.py --option-paper
+```
+
+For unattended Ubuntu VPS installation, Telegram/email delivery, systemd
+restart recovery and the weekday 09:10 IST timer, see `deploy/README_VPS.md`.
+
 ## Safety
 
 - Paper mode is the default.

@@ -10,6 +10,7 @@ MARKET_OPEN = time(9, 15)
 TRIGGER_START = time(9, 30)
 LAST_TRIGGER_START = time(9, 36)
 MARKET_EXIT = time(15, 15)
+SERVICE_STOP = time(15, 20)
 
 QUANTITY = 100
 TP1_QUANTITY = 70
@@ -55,6 +56,24 @@ PRICE_DIVISOR = 100.0
 REPORT_REFRESH_SECONDS = 30
 DATABASE_FLUSH_SECONDS = 1.0
 SINGLE_INSTANCE_PORT = 29330
+
+# Option paper execution. Signals and exits always come from the underlying.
+OPTION_PAPER_LOTS = int(os.getenv("OPTION_PAPER_LOTS", "1"))
+OPTION_WIDE_STRIKE_MIN_GAP = float(
+    os.getenv("OPTION_WIDE_STRIKE_MIN_GAP", "10")
+)
+OPTION_WIDE_STRIKE_UPPER_THRESHOLD = float(
+    os.getenv("OPTION_WIDE_STRIKE_UPPER_THRESHOLD", "0.75")
+)
+OPTION_MAX_SPREAD_FRACTION = float(
+    os.getenv("OPTION_MAX_SPREAD_FRACTION", "0.05")
+)
+OPTION_MAX_QUOTE_AGE_SECONDS = int(
+    os.getenv("OPTION_MAX_QUOTE_AGE_SECONDS", "15")
+)
+OPTION_TP1_FRACTION = 0.70
+OPTION_RUNNER_FRACTION = 0.30
+NFO_EXCHANGE_TYPE = 2
 
 # Real cash-equity orders require both command-line confirmation and this
 # untracked approval file. Paper mode is always the default.

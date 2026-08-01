@@ -26,12 +26,14 @@ class StockRuntime:
         store: SQLiteStore,
         broker: EquityBroker,
         should_record: Callable[[], bool],
+        option_executor=None,
     ):
         self.instrument = instrument
         self.symbol = instrument.name
         self.store = store
         self.broker = broker
         self.should_record = should_record
+        self.option_executor = option_executor
         self.lock = threading.RLock()
         self.strategy = ScannerStrategy(self.symbol, self._emit)
         today = datetime.now(ZoneInfo(TIMEZONE)).date()
@@ -97,15 +99,18 @@ class StockRuntime:
                 self.store.insert_trade(position)
                 if position.tp1_touched:
                     self.store.update_tp1_touch(position)
-                self.broker.submit(
-                    timestamp,
-                    position.trade_id,
-                    self.instrument,
-                    "BUY",
-                    QUANTITY,
-                    position.entry_mode,
-                    price,
-                )
+                if self.option_executor is not None:
+                    self.option_executor.open_position(timestamp, position)
+                else:
+                    self.broker.submit(
+                        timestamp,
+                        position.trade_id,
+                        self.instrument,
+                        "BUY",
+                        QUANTITY,
+                        position.entry_mode,
+                        price,
+                    )
 
     def advance_clock(self, now: datetime) -> None:
         with self.lock:
@@ -165,15 +170,22 @@ class StockRuntime:
         self.strategy.mark_tp1_booked(timestamp, price)
         if self.should_record():
             self.store.update_tp1(position)
-            self.broker.submit(
-                timestamp,
-                position.trade_id,
-                self.instrument,
-                "SELL",
-                TP1_QUANTITY,
-                reason,
-                price,
-            )
+            if self.option_executor is not None:
+                self.option_executor.book_tp1(
+                    position.trade_id,
+                    timestamp,
+                    price,
+                )
+            else:
+                self.broker.submit(
+                    timestamp,
+                    position.trade_id,
+                    self.instrument,
+                    "SELL",
+                    TP1_QUANTITY,
+                    reason,
+                    price,
+                )
         self._emit(
             timestamp,
             "TP1_EXECUTED",
@@ -241,15 +253,23 @@ class StockRuntime:
         )
         self.strategy.mark_closed(timestamp, price, reason)
         if self.should_record():
-            self.broker.submit(
-                timestamp,
-                position.trade_id,
-                self.instrument,
-                "SELL",
-                quantity,
-                reason,
-                price,
-            )
+            if self.option_executor is not None:
+                self.option_executor.close_position(
+                    position.trade_id,
+                    timestamp,
+                    price,
+                    reason,
+                )
+            else:
+                self.broker.submit(
+                    timestamp,
+                    position.trade_id,
+                    self.instrument,
+                    "SELL",
+                    quantity,
+                    reason,
+                    price,
+                )
             self.store.close_trade(position)
         self._emit(
             timestamp,
@@ -296,10 +316,12 @@ class LiveTradingSystem:
         catalog: EquityCatalog,
         store: SQLiteStore,
         broker: EquityBroker,
+        option_executor=None,
     ):
         self.catalog = catalog
         self.store = store
         self.broker = broker
+        self.option_executor = option_executor
         self.replaying = False
         self.last_tick_ts: datetime | None = None
         self.runtimes = {
@@ -308,16 +330,21 @@ class LiveTradingSystem:
                 store,
                 broker,
                 should_record=lambda: not self.replaying,
+                option_executor=option_executor,
             )
             for token, instrument in catalog.by_token.items()
         }
 
     @property
     def open_position_count(self) -> int:
+        if self.option_executor is not None:
+            return self.option_executor.open_position_count
         return sum(runtime.position_open for runtime in self.runtimes.values())
 
     @property
     def realized_pnl(self) -> float:
+        if self.option_executor is not None:
+            return self.option_executor.realized_pnl
         total = 0.0
         for runtime in self.runtimes.values():
             total += runtime.closed_pnl
@@ -345,12 +372,53 @@ class LiveTradingSystem:
                 float(tick["price"]),
                 tick.get("cumulative_volume"),
             )
+            if self.option_executor is not None and not self.replaying:
+                position = runtime.strategy.position
+                active_trade_id = (
+                    position.trade_id
+                    if position is not None and position.open_quantity > 0
+                    else None
+                )
+                self.option_executor.reconcile_underlying_tick(
+                    runtime.symbol,
+                    timestamp,
+                    float(tick["price"]),
+                    active_trade_id,
+                )
 
     def advance_clock(self, now: datetime) -> None:
         for runtime in self.runtimes.values():
             runtime.advance_clock(now)
+        if self.option_executor is not None and not self.replaying:
+            self.option_executor.advance_clock(now)
 
     def close_all(self, now: datetime, reason: str) -> None:
         for runtime in self.runtimes.values():
             if runtime.position_open and runtime.last_price is not None:
                 runtime._close_position(now, runtime.last_price, reason)
+
+    def reconcile_option_positions(self, now: datetime) -> None:
+        if self.option_executor is None:
+            return
+        underlying_open = {
+            runtime.strategy.position.trade_id
+            for runtime in self.runtimes.values()
+            if runtime.position_open and runtime.strategy.position is not None
+        }
+        by_trade = {
+            runtime.strategy.position.trade_id: runtime
+            for runtime in self.runtimes.values()
+            if runtime.strategy.position is not None
+        }
+        for trade_id in list(self.option_executor.positions):
+            if trade_id in underlying_open:
+                continue
+            runtime = by_trade.get(trade_id)
+            underlying_price = runtime.last_price if runtime else None
+            if underlying_price is not None:
+                self.option_executor.close_position(
+                    trade_id,
+                    now,
+                    underlying_price,
+                    "RECOVERY_RECONCILIATION",
+                )
