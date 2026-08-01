@@ -18,7 +18,7 @@ class NotificationService:
         self.telegram_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         self.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
         self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
-        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        self.smtp_port = int(os.getenv("SMTP_PORT") or "587")
         self.smtp_user = os.getenv("SMTP_USER", "").strip()
         self.smtp_password = os.getenv("SMTP_APP_PASSWORD", "").strip()
         self.email_to = [

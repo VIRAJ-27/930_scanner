@@ -42,7 +42,26 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--live", action="store_true")
     mode.add_argument("--option-paper", action="store_true")
     parser.add_argument("--confirm-live", default="")
+    parser.add_argument(
+        "--stop-at",
+        type=parse_clock_time,
+        default=SERVICE_STOP,
+        metavar="HH:MM",
+        help="Scheduled service stop time in Asia/Kolkata (default: 15:20).",
+    )
+    parser.add_argument(
+        "--stop-reason",
+        default="SCHEDULED_SERVICE_STOP",
+        help="Exit label used only when --stop-at is reached.",
+    )
     return parser.parse_args()
+
+
+def parse_clock_time(value: str):
+    try:
+        return datetime.strptime(value, "%H:%M").time()
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("time must use HH:MM format") from error
 
 
 def validate_live_approval(args: argparse.Namespace) -> None:
@@ -159,11 +178,13 @@ def main() -> None:
 
     last_report = 0.0
     health_alert_sent = False
+    scheduled_stop_reached = False
     try:
         while not stop_event.wait(1):
             now = datetime.now(ist)
             system.advance_clock(now)
-            if now.time() >= SERVICE_STOP:
+            if now.time() >= args.stop_at:
+                scheduled_stop_reached = True
                 break
             if (
                 not health_alert_sent
@@ -204,7 +225,8 @@ def main() -> None:
                 last_report = time.monotonic()
     finally:
         now = datetime.now(ist)
-        system.close_all(now, "SERVICE_SHUTDOWN")
+        exit_reason = args.stop_reason if scheduled_stop_reached else "SERVICE_SHUTDOWN"
+        system.close_all(now, exit_reason)
         market_data.close()
         broker.close()
         store.flush()
