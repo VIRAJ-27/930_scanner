@@ -44,11 +44,14 @@ class Candle:
 class Setup:
     number: int
     trigger: Candle
-    guide_window_start: datetime | None = None
-    guide_window_end: datetime | None = None
+    g1_window_start: datetime | None = None
+    g1_window_end: datetime | None = None
     g1: Candle | None = None
-    g2_start: datetime | None = None
-    g3_start: datetime | None = None
+    entry_window_start: datetime | None = None
+    entry_window_end: datetime | None = None
+    trigger_range_fraction: float | None = None
+    ep_fraction: float | None = None
+    r1_target: float | None = None
     outcome: str = ""
 
 
@@ -63,8 +66,11 @@ class Position:
     current_sl: float
     tp1_target: float | None
     open_quantity: int = 100
-    entry_mode: str = "G2_G1_HIGH_BREAK"
+    entry_mode: str = "G1_HIGH_BREAK"
     g1_low: float | None = None
+    trigger_high: float | None = None
+    r1_target: float | None = None
+    r2_target: float | None = None
     tp1_touched: bool = False
     tp1_touch_time: datetime | None = None
     tp1_minute: datetime | None = None

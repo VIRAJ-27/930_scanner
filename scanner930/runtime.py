@@ -34,6 +34,7 @@ class StockRuntime:
         self.strategy = ScannerStrategy(self.symbol, self._emit)
         self.one_minute = CandleAggregator(self.symbol, 1, self._on_one_minute)
         self.three_minute = CandleAggregator(self.symbol, 3, self._on_three_minute)
+        self.five_minute = CandleAggregator(self.symbol, 5, self._on_five_minute)
         self.vwap = SessionVwap()
         self.trading_day = None
         self.last_price: float | None = None
@@ -61,9 +62,9 @@ class StockRuntime:
                 self.reset_day(timestamp.date())
             self.last_price = price
 
-            # Three-minute completion runs first at shared boundaries so TP1
-            # can immediately use the most recently completed 3m candle low.
+            # Higher-timeframe completions run before the 1m close callback.
             self.three_minute.update(timestamp, price, cumulative_volume)
+            self.five_minute.update(timestamp, price, cumulative_volume)
             self.one_minute.update(timestamp, price, cumulative_volume)
 
             if self.position_open:
@@ -75,6 +76,8 @@ class StockRuntime:
                 return
             if self.should_record():
                 self.store.insert_trade(position)
+                if position.tp1_touched:
+                    self.store.update_tp1_touch(position)
                 self.broker.submit(
                     timestamp,
                     position.trade_id,
@@ -88,6 +91,7 @@ class StockRuntime:
     def advance_clock(self, now: datetime) -> None:
         with self.lock:
             self.three_minute.advance_clock(now)
+            self.five_minute.advance_clock(now)
             self.one_minute.advance_clock(now)
             if (
                 self.position_open
@@ -101,6 +105,11 @@ class StockRuntime:
         if self.should_record():
             self.store.save_candle(candle)
         self.strategy.on_three_minute(candle)
+
+    def _on_five_minute(self, candle) -> None:
+        if self.should_record():
+            self.store.save_candle(candle)
+        self.strategy.on_five_minute(candle)
 
     def _on_one_minute(self, candle) -> None:
         if self.should_record():
@@ -247,12 +256,13 @@ class StockRuntime:
             "TRIGGER_VALID",
             "TRIGGER_REJECTED_FIRST_RED",
             "G1_VALID",
-            "G2_EQUAL_G1_HIGH",
             "SETUP_FAILED",
             "ENTRY_SIGNAL",
+            "TP1_TOUCHED_AT_ENTRY",
             "TP1_TOUCHED",
             "TP1_EXECUTED",
-            "TRAIL_RAISED_RED_3M",
+            "SL_MOVED_TO_G1_LOW",
+            "TRAIL_RAISED_5M",
             "POSITION_CLOSED",
         }:
             print(

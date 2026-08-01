@@ -89,28 +89,37 @@ def main() -> None:
                 "otherwise discard stock for the day",
             ),
             (
-                "Guide window",
-                "Only the next four completed 1m candles after Trigger are checked",
+                "G1 window",
+                "First green candle in the next three completed 1m candles after Trigger",
             ),
             (
                 "G1",
-                "First green 1m candle in the guide window; range "
-                "(High-Low)/Low must be <=0.20%",
+                "Trigger-low break before/during G1 discards the stock",
             ),
             (
                 "Entry",
-                "G2 must strictly break G1 high, or equal it and allow G3 "
-                "one strict-break opportunity; G2 below G1 high discards",
+                "Strict G1-high break in any of the next three 1m candles; "
+                "G1/Trigger-low break first discards",
+            ),
+            (
+                "EP and R1",
+                "Trigger range <0.50% uses range x1.4; otherwise adds 0.10 "
+                "percentage points; R1 is EP% above Trigger high",
             ),
             (
                 "TP1",
-                "2.2R from entry to G1 low; sell 50 shares at target-touch "
-                "1m candle close",
+                "Minimum of R1 and entry + 3x(entry-Trigger low); sell 70 "
+                "shares at target-touch 1m candle close",
             ),
             (
                 "Runner",
-                "50 shares; move SL to entry after TP1, then use monotonic "
-                "completed red 3m candle lows",
+                "30 shares; move SL to Trigger high after TP1, then use "
+                "monotonic completed 5m candle lows",
+            ),
+            (
+                "Pre-TP1 stop upgrade",
+                "After entry, a completed 3m close above Trigger high moves "
+                "SL from Trigger low to G1 low",
             ),
             ("Maximum setups", "One setup per stock/day"),
             ("Market exit", "15:15 IST"),
@@ -131,6 +140,7 @@ def main() -> None:
         "Trades": int(len(trades)),
         "Winners": int((pnl > 0).sum()),
         "Losers": int((pnl < 0).sum()),
+        "WinRate": round(float((pnl > 0).mean()), 4) if len(pnl) else 0.0,
         "NetPnL": round(float(pnl.sum()), 2),
         "AveragePnL": round(float(pnl.mean()), 2) if len(pnl) else 0.0,
         "NetRR": (
@@ -148,13 +158,13 @@ def main() -> None:
             if not trades.empty
             else 0
         ),
-        "G2EntryTrades": (
-            int((trades["EntryMode"] == "G2_G1_HIGH_BREAK").sum())
+        "R1TargetTrades": (
+            int((trades["TargetDriver"] == "R1").sum())
             if not trades.empty
             else 0
         ),
-        "G3EntryTrades": (
-            int((trades["EntryMode"] == "G3_G1_HIGH_BREAK").sum())
+        "R2TargetTrades": (
+            int((trades["TargetDriver"] == "R2").sum())
             if not trades.empty
             else 0
         ),
