@@ -53,13 +53,18 @@ def main() -> None:
         if "EntryTier" in trades.columns
         else pd.DataFrame()
     )
+    mode = (
+        summarize(trades, "EntryMode")
+        if "EntryMode" in trades.columns
+        else pd.DataFrame()
+    )
     daily = summarize(trades, "Date")
     stock = summarize(trades, "Symbol")
     trades.to_csv(args.output / "Trades.csv", index=False)
     events.to_csv(args.output / "SetupAudit.csv", index=False)
     setup_report = events[
         events["EventType"].isin(
-            ["G1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"]
+            ["G1_VALID", "B1_VALID", "SETUP_FAILED", "ENTRY_SIGNAL"]
         )
     ].copy()
     setup_report.to_csv(args.output / "SetupReport.csv", index=False)
@@ -73,6 +78,7 @@ def main() -> None:
     event_summary.to_csv(args.output / "EventSummary.csv", index=False)
     monthly.to_csv(args.output / "MonthlySummary.csv", index=False)
     tier.to_csv(args.output / "EntryTierSummary.csv", index=False)
+    mode.to_csv(args.output / "EntryModeSummary.csv", index=False)
     daily.to_csv(args.output / "DailySummary.csv", index=False)
     stock.to_csv(args.output / "StockSummary.csv", index=False)
     coverage.to_csv(args.output / "Coverage.csv", index=False)
@@ -95,8 +101,32 @@ def main() -> None:
                 "otherwise discard stock for the day",
             ),
             (
+                "Large-green route",
+                "If any green 3m candle from 09:21 through the candle before Trigger "
+                "has (High-Low)/Low strictly above 0.60%, use the B1 route",
+            ),
+            (
+                "B1 close",
+                "The first of the next six 1m candles closing strictly above Trigger high is B1",
+            ),
+            (
+                "B1 entry",
+                "B1 high must break in the immediately next 1m candle or discard; "
+                "no Normal/Silver filter applies",
+            ),
+            (
+                "B1 risk",
+                "B1 low is the initial SL; TP1 is exactly 2.2R and R1 cap is ignored",
+            ),
+            (
+                "B1 close confirmation",
+                "At least one of X1, X2 or X3 must close strictly above B1 high; "
+                "otherwise exit at X3 close with BE_EXIT_NO_CLOSE_ABOVE_B1_HIGH",
+            ),
+            (
                 "G1 window",
-                "First green candle in the next three completed 1m candles after Trigger",
+                "When the large-green route does not apply, first green candle in the next "
+                "three completed 1m candles after Trigger",
             ),
             (
                 "G1",
@@ -129,13 +159,13 @@ def main() -> None:
             ),
             (
                 "Runner",
-                "30 shares; move SL to Trigger high after TP1, then use "
-                "monotonic completed 5m candle lows",
+                "30 shares; after TP1 move standard G1 SL to Trigger high and "
+                "B1 SL to breakeven, then use monotonic completed 5m candle lows",
             ),
             (
                 "Pre-TP1 stop upgrade",
-                "After entry, a completed 3m close above Trigger high moves "
-                "SL from Trigger low to G1 low",
+                "Standard G1 only: after entry, a completed 3m close above Trigger "
+                "high moves SL from Trigger low to G1 low; B1 SL remains at B1 low",
             ),
             ("Maximum setups", "One setup per stock/day"),
             ("Market exit", "15:15 IST"),
@@ -184,6 +214,16 @@ def main() -> None:
             if "EntryTier" in trades.columns
             else 0
         ),
+        "B1Trades": (
+            int((trades["EntryMode"] == "B1_HIGH_BREAK").sum())
+            if "EntryMode" in trades.columns
+            else 0
+        ),
+        "StandardG1Trades": (
+            int((trades["EntryMode"] == "G1_HIGH_BREAK").sum())
+            if "EntryMode" in trades.columns
+            else 0
+        ),
         "R1TargetTrades": (
             int((trades["TargetDriver"] == "R1").sum())
             if not trades.empty
@@ -191,6 +231,11 @@ def main() -> None:
         ),
         "R2TargetTrades": (
             int((trades["TargetDriver"] == "R2").sum())
+            if not trades.empty
+            else 0
+        ),
+        "B1TwoPointTwoRTargetTrades": (
+            int((trades["TargetDriver"] == "R2_2.2R").sum())
             if not trades.empty
             else 0
         ),

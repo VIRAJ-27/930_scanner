@@ -33,9 +33,35 @@ class StrategyRuleTests(unittest.TestCase):
         )
 
     def valid_trigger(self, high=100.4, low=100.0):
-        self.strategy.on_three_minute(c3("09:21", 99.2, 99.8, 99.1, 99.7))
-        self.strategy.on_three_minute(c3("09:24", 99.6, 100.1, 99.5, 100.0))
-        self.strategy.on_three_minute(c3("09:27", 99.8, 100.5, 99.7, 100.3))
+        self.strategy.on_three_minute(c3("09:21", 99.2, 99.7, 99.2, 99.6))
+        self.strategy.on_three_minute(c3("09:24", 99.6, 100.0, 99.5, 99.9))
+        self.strategy.on_three_minute(
+            c3(
+                "09:27",
+                high - 0.45,
+                high + 0.05,
+                high - 0.50,
+                high - 0.10,
+            )
+        )
+        self.strategy.on_three_minute(
+            c3("09:30", high - 0.05, high, low, high - 0.2)
+        )
+
+    def valid_trigger_with_large_green(self, high=100.4, low=100.0):
+        self.strategy.on_three_minute(
+            c3("09:21", 99.2, 100.0, 99.3, 99.9)
+        )
+        self.strategy.on_three_minute(c3("09:24", 99.6, 100.0, 99.5, 99.9))
+        self.strategy.on_three_minute(
+            c3(
+                "09:27",
+                high - 0.45,
+                high + 0.05,
+                high - 0.50,
+                high - 0.10,
+            )
+        )
         self.strategy.on_three_minute(
             c3("09:30", high - 0.05, high, low, high - 0.2)
         )
@@ -168,6 +194,96 @@ class StrategyRuleTests(unittest.TestCase):
         self.strategy.on_three_minute(c3("09:27", 99.8, 100.5, 99.7, 100.3))
         self.strategy.on_three_minute(c3("09:30", 100.4, 100.5, 100, 100.2, 100.3))
         self.assertEqual(self.strategy.state, "DONE")
+
+    def test_large_green_selects_b1_path(self):
+        self.valid_trigger_with_large_green()
+        self.assertEqual(self.strategy.state, "WAIT_B1")
+        self.assertEqual(self.strategy.setup.entry_path, "LARGE_GREEN_B1")
+        self.assertGreater(
+            self.strategy.setup.large_green_range_fraction,
+            0.006,
+        )
+
+    def test_red_pretrigger_candle_above_threshold_does_not_select_b1(self):
+        self.strategy.on_three_minute(
+            c3("09:21", 99.9, 100.0, 99.3, 99.4)
+        )
+        self.strategy.on_three_minute(c3("09:24", 99.6, 100.0, 99.5, 99.9))
+        self.strategy.on_three_minute(c3("09:27", 99.9, 100.4, 99.9, 100.3))
+        self.strategy.on_three_minute(c3("09:30", 100.35, 100.4, 100.0, 100.2))
+        self.assertEqual(self.strategy.state, "WAIT_G1")
+        self.assertEqual(self.strategy.setup.entry_path, "STANDARD_G1")
+
+    def test_first_one_minute_close_above_trigger_becomes_b1(self):
+        self.valid_trigger_with_large_green()
+        self.strategy.on_one_minute(c1("09:33", 100.2, 100.6, 100.1, 100.35))
+        self.assertEqual(self.strategy.state, "WAIT_B1")
+        self.strategy.on_one_minute(c1("09:34", 100.35, 100.8, 100.2, 100.6))
+        self.assertEqual(self.strategy.state, "WAIT_B1_BREAK")
+        self.assertEqual(self.strategy.setup.b1.start, moment("09:34:00"))
+
+    def test_no_close_above_trigger_in_six_one_minute_candles_discards(self):
+        self.valid_trigger_with_large_green()
+        for hhmm in ["09:33", "09:34", "09:35", "09:36", "09:37", "09:38"]:
+            self.strategy.on_one_minute(c1(hhmm, 100.2, 100.5, 100.1, 100.35))
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(
+            self.events[-1][1]["outcome"],
+            "NO_1M_CLOSE_ABOVE_TRIGGER_IN_SIX_CANDLES",
+        )
+
+    def test_b1_break_uses_b1_low_stop_and_two_point_two_r_without_ema(self):
+        self.valid_trigger_with_large_green()
+        self.strategy.on_one_minute(c1("09:33", 100.2, 100.8, 100.1, 100.6))
+        self.strategy.on_entry_tick(moment("09:34:05"), 100.79)
+        self.assertEqual(self.strategy.state, "WAIT_B1_BREAK")
+        position = self.strategy.on_entry_tick(moment("09:34:20"), 100.81)
+        self.assertIsNotNone(position)
+        self.assertEqual(position.entry_mode, "B1_HIGH_BREAK")
+        self.assertEqual(position.entry_tier, "B1")
+        self.assertAlmostEqual(position.initial_sl, 100.1)
+        self.assertAlmostEqual(
+            position.tp1_target,
+            100.81 + 2.2 * (100.81 - 100.1),
+        )
+
+    def test_b1_high_must_break_in_immediately_next_one_minute_candle(self):
+        self.valid_trigger_with_large_green()
+        self.strategy.on_one_minute(c1("09:33", 100.2, 100.8, 100.1, 100.6))
+        self.strategy.on_one_minute(c1("09:34", 100.5, 100.79, 100.2, 100.7))
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(
+            self.events[-1][1]["outcome"],
+            "NO_B1_HIGH_BREAK_IN_NEXT_1M_CANDLE",
+        )
+        self.assertIsNone(
+            self.strategy.on_entry_tick(moment("09:35:05"), 100.81)
+        )
+
+    def test_one_of_x1_x2_x3_must_close_above_b1_high(self):
+        self.valid_trigger_with_large_green()
+        self.strategy.on_one_minute(c1("09:33", 100.2, 100.8, 100.1, 100.6))
+        position = self.strategy.on_entry_tick(moment("09:34:20"), 100.81)
+        self.assertIsNone(
+            self.strategy.on_one_minute(c1("09:34", 100.7, 100.9, 100.2, 100.75))
+        )
+        self.assertIsNone(
+            self.strategy.on_one_minute(c1("09:35", 100.7, 101.0, 100.5, 100.9))
+        )
+        self.assertTrue(position.b1_close_confirmed)
+
+    def test_x3_close_exits_when_no_candle_closes_above_b1_high(self):
+        self.valid_trigger_with_large_green()
+        self.strategy.on_one_minute(c1("09:33", 100.2, 100.8, 100.1, 100.6))
+        self.strategy.on_entry_tick(moment("09:34:20"), 100.81)
+        for hhmm in ["09:34", "09:35"]:
+            self.assertIsNone(
+                self.strategy.on_one_minute(c1(hhmm, 100.7, 100.9, 100.2, 100.75))
+            )
+        reason = self.strategy.on_one_minute(
+            c1("09:36", 100.7, 100.9, 100.2, 100.75)
+        )
+        self.assertEqual(reason, "BE_EXIT_NO_CLOSE_ABOVE_B1_HIGH")
 
     def test_standard_hlc3_session_vwap(self):
         calculator = SessionVwap()

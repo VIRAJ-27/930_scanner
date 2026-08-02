@@ -22,7 +22,40 @@ The Trigger is valid only when:
 If the first red candle fails, or no red candle appears in the three-candle
 window, discard the stock for the day.
 
-## G1 and entry
+## Large-green route selection
+
+After a valid Trigger forms, inspect every completed green 3-minute candle
+starting at 09:21 and ending with the candle immediately before the Trigger.
+For each candle calculate:
+
+`Range% = (High - Low) / Low x 100`
+
+If any such green candle has `Range% > 0.60%`, use the large-green B1 route.
+The threshold is strict: exactly 0.60% remains on the standard route. The
+largest qualifying range is retained in the audit report. If no candle
+qualifies, use the standard G1 route below.
+
+## Large-green B1 entry
+
+- Trigger validation remains unchanged.
+- Inspect only the first six completed 1-minute candles after the Trigger.
+- The first candle that closes strictly above Trigger high is B1.
+- If none of those six candles closes above Trigger high, discard the stock.
+- Inspect only the immediately following 1-minute candle, X1.
+- Buy immediately on a strict break above B1 high during X1.
+- If X1 does not break B1 high, discard the stock for the day.
+- B1 entries do not use the Normal or Silver EMA entry-quality filters.
+- The initial stop after entry is B1 low.
+- TP1 is exactly `Entry + 2.2 x (Entry - B1 low)`. The Trigger-percentage
+  R1 cap does not apply to this route.
+- From B1, inspect X1, X2 and X3. At least one must close strictly above B1
+  high. A high break without such a close does not satisfy confirmation.
+- If none closes above B1 high, exit the open position at X3's close and label
+  it `BE_EXIT_NO_CLOSE_ABOVE_B1_HIGH`. This label describes the rule; the
+  actual exit price is X3 close and may be above or below entry.
+- A strict Trigger-low break at any point before entry still discards the stock.
+
+## Standard G1 entry
 
 - Inspect the next three completed 1-minute candles after the Trigger.
 - The first green candle is G1. If none is green, discard the stock.
@@ -72,11 +105,14 @@ If entry itself is already at or above TP1, TP1 is considered touched and the
 
 ## Stops and exits
 
-- Initial stop: Trigger low.
+- Standard G1 initial stop: Trigger low.
+- Large-green B1 initial stop: B1 low, activated only after entry.
 - After entry, the first completed 3-minute candle that closes strictly above
-  Trigger high moves the stop to G1 low. The stop can never move down.
+  Trigger high moves a standard G1 stop to G1 low. This step does not change
+  the large-green B1 stop. A stop can never move down.
 - When a 1-minute candle touches TP1, sell 70 shares at that candle's close.
-- After TP1, move the remaining 30-share stop to Trigger high.
+- After TP1, move a standard G1 runner stop to Trigger high and a B1 runner
+  stop to breakeven (entry price).
 - Subsequently, every completed 5-minute candle low can raise the runner stop.
   Five-minute candles are aligned from 09:15 and the stop remains monotonic.
 - Stop exits are immediate when touched.
@@ -84,7 +120,8 @@ If entry itself is already at or above TP1, TP1 is considered touched and the
 
 ## Reporting
 
-`NetRR = Gross P&L / (100 × (Entry - Trigger Low))`
+`NetRR = Gross P&L / initial trade risk`, where initial risk is 100 shares
+times Entry minus Trigger low for G1, or Entry minus B1 low for B1.
 
 Monthly NetRR is the sum of trade NetRR. Backtest reports exclude brokerage,
 taxes, exchange fees and slippage.

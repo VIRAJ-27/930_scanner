@@ -32,10 +32,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end", default=date.today().isoformat())
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--end-index", type=int)
+    parser.add_argument(
+        "--exclude-date",
+        action="append",
+        default=[],
+        help="Trading date to exclude (YYYY-MM-DD); repeat when needed for like-for-like comparisons.",
+    )
     return parser.parse_args()
 
 
-def load_symbol(symbol, base_data, supplement, start, end):
+def load_symbol(symbol, base_data, supplement, start, end, exclude_dates=None):
     paths = [base_data / f"{safe_name(symbol)}_1m.csv"]
     for folder in supplement or []:
         paths.append(folder / f"{safe_name(symbol)}_1m.csv")
@@ -59,6 +65,9 @@ def load_symbol(symbol, base_data, supplement, start, end):
         .reset_index(drop=True)
     )
     result["Datetime"] = result["Datetime"].dt.tz_convert("Asia/Kolkata")
+    if exclude_dates:
+        excluded = {date.fromisoformat(value) for value in exclude_dates}
+        result = result[~result["Datetime"].dt.date.isin(excluded)]
     result = result[(result["Datetime"] >= start) & (result["Datetime"] <= end)]
     for column in ["Open", "High", "Low", "Close", "Volume"]:
         result[column] = pd.to_numeric(result[column], errors="coerce")
@@ -211,7 +220,13 @@ def backtest_day(
                 )
             ):
                 book_tp1(strategy, active, timestamp, minute_end, float(minute.Close))
-            strategy.on_one_minute(row_to_candle(symbol, minute, 1))
+            close_reason = strategy.on_one_minute(
+                row_to_candle(symbol, minute, 1)
+            )
+            if close_reason and position.open_quantity > 0:
+                strategy.mark_closed(minute_end, float(minute.Close), close_reason)
+                trades.append(finalize_record(active, position))
+                active = None
             continue
 
         if strategy.done:
@@ -221,7 +236,8 @@ def backtest_day(
         setup = strategy.setup
         if setup is not None:
             if (
-                strategy.state in {"WAIT_G1", "WAIT_ENTRY"}
+                strategy.state
+                in {"WAIT_G1", "WAIT_ENTRY", "WAIT_B1", "WAIT_B1_BREAK"}
                 and float(minute.Low) < setup.trigger.low
             ):
                 strategy.on_entry_tick(timestamp, setup.trigger.low - TICK_SIZE)
@@ -264,8 +280,61 @@ def backtest_day(
                                 minute_end,
                                 float(minute.Close),
                             )
-        if not entered and not strategy.done:
-            strategy.on_one_minute(row_to_candle(symbol, minute, 1))
+            elif strategy.state == "WAIT_B1_BREAK" and setup.b1 is not None:
+                if float(minute.High) > setup.b1.high:
+                    entry_price = max(
+                        float(minute.Open),
+                        round(setup.b1.high + TICK_SIZE, 2),
+                    )
+                    position = strategy.on_entry_tick(timestamp, entry_price)
+                    if position is not None:
+                        active = new_trade_record(
+                            trading_day,
+                            position,
+                            setup.trigger,
+                            setup.b1,
+                            setup,
+                            timestamp,
+                        )
+                        entered = True
+                        if float(minute.Low) <= position.current_sl:
+                            exit_price = (
+                                float(minute.Open)
+                                if float(minute.Open) <= position.current_sl
+                                else position.current_sl
+                            )
+                            strategy.mark_closed(
+                                timestamp,
+                                exit_price,
+                                "INITIAL_SL",
+                            )
+                            trades.append(finalize_record(active, position))
+                            active = None
+                        elif (
+                            position.tp1_touched
+                            or float(minute.High) >= position.tp1_target
+                        ):
+                            book_tp1(
+                                strategy,
+                                active,
+                                timestamp,
+                                minute_end,
+                                float(minute.Close),
+                            )
+        if not strategy.done:
+            close_reason = strategy.on_one_minute(
+                row_to_candle(symbol, minute, 1)
+            )
+            position = strategy.position
+            if (
+                close_reason
+                and active is not None
+                and position is not None
+                and position.open_quantity > 0
+            ):
+                strategy.mark_closed(minute_end, float(minute.Close), close_reason)
+                trades.append(finalize_record(active, position))
+                active = None
 
     position = strategy.position
     if position is not None and position.open_quantity > 0 and active is not None:
@@ -307,18 +376,23 @@ def book_tp1(strategy, active, touch_time, exit_time, close_price):
     active["FinalQuantity"] = RUNNER_QUANTITY
 
 
-def new_trade_record(trading_day, position, trigger, g1, setup, entry_minute):
-    g1_delay = int((g1.start - trigger.completion_time).total_seconds() / 60) + 1
-    entry_delay = int(
-        (entry_minute - (g1.start + timedelta(minutes=1))).total_seconds() / 60
+def new_trade_record(trading_day, position, trigger, reference, setup, entry_minute):
+    reference_type = "B1" if position.entry_mode == "B1_HIGH_BREAK" else "G1"
+    reference_delay = int(
+        (reference.start - trigger.completion_time).total_seconds() / 60
     ) + 1
-    return {
+    entry_delay = int(
+        (entry_minute - reference.completion_time).total_seconds() / 60
+    ) + 1
+    record = {
         "Date": trading_day.isoformat(),
         "Month": trading_day.strftime("%Y-%m"),
         "Symbol": position.symbol,
         "SetupNumber": 1,
         "EntryMode": position.entry_mode,
         "EntryTier": position.entry_tier,
+        "EntryPath": setup.entry_path,
+        "ReferenceType": reference_type,
         "EMA3mRisePercent": (
             None
             if position.ema_3m_rise_fraction is None
@@ -338,22 +412,36 @@ def new_trade_record(trading_day, position, trigger, g1, setup, entry_minute):
         "TriggerRangePercent": setup.trigger_range_fraction * 100,
         "EPPercent": setup.ep_fraction * 100,
         "R1Target": position.r1_target,
-        **candle_fields("G1", g1),
-        "G1DelayCandle": g1_delay,
+        "LargeGreenRangePercent": (
+            None
+            if setup.large_green_range_fraction is None
+            else setup.large_green_range_fraction * 100
+        ),
+        **nullable_candle_fields("LargeGreen", setup.large_green_candle),
+        **nullable_candle_fields("G1", setup.g1),
+        **nullable_candle_fields("B1", setup.b1),
+        "ReferenceDelayMinutes": reference_delay,
+        "G1DelayCandle": reference_delay if reference_type == "G1" else None,
         "EntryDelayAfterG1": entry_delay,
         "EntryMinute": iso(entry_minute),
         "EntryTime": iso(position.entry_time),
         "EntryPrice": position.entry_price,
         "Quantity": QUANTITY,
         "InitialSL": position.initial_sl,
-        "G1Low": g1.low,
+        "G1Low": setup.g1.low if setup.g1 is not None else None,
+        "B1ConfirmationEnd": iso(position.b1_confirmation_end),
+        "B1CloseConfirmed": position.b1_close_confirmed,
         "G1SLMoveTime": "",
         "Post3mSL": None,
         "RiskPerShare": position.entry_price - position.initial_sl,
         "RiskPercent": (position.entry_price - position.initial_sl) / position.entry_price * 100,
         "R2Target": position.r2_target,
         "TP1Target": position.tp1_target,
-        "TargetDriver": "R1" if position.r1_target <= position.r2_target else "R2",
+        "TargetDriver": (
+            "R2_2.2R"
+            if position.entry_mode == "B1_HIGH_BREAK"
+            else "R1" if position.r1_target <= position.r2_target else "R2"
+        ),
         "TP1TouchTime": "",
         "TP1ExitTime": "",
         "TP1ExitPrice": None,
@@ -370,6 +458,7 @@ def new_trade_record(trading_day, position, trigger, g1, setup, entry_minute):
         "RMultiple": None,
         "HoldingMinutes": None,
     }
+    return record
 
 
 def finalize_record(record, position):
@@ -381,6 +470,8 @@ def finalize_record(record, position):
     final_quantity = RUNNER_QUANTITY if position.tp1_booked else QUANTITY
     result["FinalQuantity"] = final_quantity
     result["ExitReason"] = position.final_exit_reason
+    if position.entry_mode == "B1_HIGH_BREAK":
+        result["B1CloseConfirmed"] = position.b1_close_confirmed
     tp1_pnl = (
         (position.tp1_exit_price - position.entry_price) * TP1_QUANTITY
         if position.tp1_exit_price is not None
@@ -418,6 +509,20 @@ def candle_fields(prefix, candle):
         f"{prefix}Close": candle.close,
         f"{prefix}Volume": candle.volume,
         f"{prefix}VWAP": candle.vwap,
+    }
+
+
+def nullable_candle_fields(prefix, candle):
+    if candle is not None:
+        return candle_fields(prefix, candle)
+    return {
+        f"{prefix}Time": "",
+        f"{prefix}Open": None,
+        f"{prefix}High": None,
+        f"{prefix}Low": None,
+        f"{prefix}Close": None,
+        f"{prefix}Volume": None,
+        f"{prefix}VWAP": None,
     }
 
 
@@ -472,6 +577,7 @@ def main():
                 args.supplement,
                 pd.Timestamp("1900-01-01", tz="Asia/Kolkata"),
                 end,
+                args.exclude_date,
             )
             minute = minute_all[minute_all["Datetime"] >= start].copy()
             if minute.empty:
@@ -571,6 +677,10 @@ def main():
         "Notes": [
             "HLC3 session VWAP resets at 09:15 IST.",
             "The first red 3m Trigger among 09:30, 09:33 and 09:36 uses the unchanged validation rules.",
+            "If any green 3m candle from 09:21 through the candle before Trigger has range above 0.60%, the large-green B1 path applies.",
+            "Large-green path: first close above Trigger high within six 1m candles is B1; B1 high must break in the immediately next 1m candle.",
+            "Large-green B1 entries bypass Normal/Silver filters, use B1 low as SL, and target 2.2R without the R1 cap.",
+            "After B1 entry, X1/X2/X3 must include a close above B1 high; otherwise exit at the X3 close.",
             "G1 is the first green candle in the next three 1m candles.",
             "Entry is a strict G1-high break only in the immediately next 1m candle.",
             "Silver: completed 1m EMA20 rises at least 0.116% over five candles and G1 body is at least 57.9% of range.",

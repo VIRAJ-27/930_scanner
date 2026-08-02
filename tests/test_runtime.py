@@ -41,14 +41,25 @@ class RuntimeTests(unittest.TestCase):
 
     def prepare_entry(self):
         strategy = self.runtime.strategy
-        strategy.on_three_minute(self.c3("09:21", 99.2, 99.8, 99.1, 99.7))
-        strategy.on_three_minute(self.c3("09:24", 99.6, 100.1, 99.5, 100.0))
-        strategy.on_three_minute(self.c3("09:27", 99.8, 100.5, 99.7, 100.3))
+        strategy.on_three_minute(self.c3("09:21", 99.2, 99.7, 99.2, 99.6))
+        strategy.on_three_minute(self.c3("09:24", 99.6, 100.0, 99.5, 99.9))
+        strategy.on_three_minute(self.c3("09:27", 99.9, 100.4, 99.9, 100.3))
         strategy.on_three_minute(self.c3("09:30", 100.35, 100.4, 100, 100.2))
         strategy.on_one_minute(
             Candle("TEST", 1, dt("09:33:00"), 100.2, 100.5, 100.1, 100.45, 10)
         )
         return strategy.on_entry_tick(dt("09:34:10"), 100.51)
+
+    def prepare_b1_entry(self):
+        strategy = self.runtime.strategy
+        strategy.on_three_minute(self.c3("09:21", 99.2, 100.0, 99.3, 99.9))
+        strategy.on_three_minute(self.c3("09:24", 99.6, 100.0, 99.5, 99.9))
+        strategy.on_three_minute(self.c3("09:27", 99.9, 100.4, 99.9, 100.3))
+        strategy.on_three_minute(self.c3("09:30", 100.35, 100.4, 100, 100.2))
+        strategy.on_one_minute(
+            Candle("TEST", 1, dt("09:33:00"), 100.2, 100.8, 100.1, 100.6, 10)
+        )
+        return strategy.on_entry_tick(dt("09:34:10"), 100.81)
 
     def test_tp1_books_70_at_close_and_moves_30_runner_to_trigger_high(self):
         position = self.prepare_entry()
@@ -76,6 +87,24 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.on_tick(dt("09:45:10"), 100.79, 1010)
         self.assertEqual(position.open_quantity, 0)
         self.assertEqual(position.final_exit_reason, "RUNNER_TRAIL_SL")
+
+    def test_b1_tp1_moves_runner_stop_to_break_even(self):
+        position = self.prepare_b1_entry()
+        self.runtime.strategy.mark_tp1_booked(dt("09:40:00"), position.tp1_target)
+        self.assertEqual(position.current_sl, position.entry_price)
+
+    def test_runtime_closes_b1_at_x3_close_without_confirmation(self):
+        position = self.prepare_b1_entry()
+        self.runtime.trading_day = dt("09:34:00").date()
+        for hhmm in ["09:34", "09:35", "09:36"]:
+            self.runtime._on_one_minute(
+                Candle("TEST", 1, dt(f"{hhmm}:00"), 100.7, 100.9, 100.2, 100.75, 10)
+            )
+        self.assertEqual(position.open_quantity, 0)
+        self.assertEqual(
+            position.final_exit_reason,
+            "BE_EXIT_NO_CLOSE_ABOVE_B1_HIGH",
+        )
 
     def test_live_broker_uses_cash_intraday_order_and_records_fill(self):
         class FakeApi:
