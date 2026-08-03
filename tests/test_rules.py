@@ -38,9 +38,9 @@ class StrategyRuleTests(unittest.TestCase):
         self.strategy.on_three_minute(
             c3(
                 "09:27",
-                high - 0.45,
+                high - 0.40,
                 high + 0.05,
-                high - 0.50,
+                high - 0.45,
                 high - 0.10,
             )
         )
@@ -76,12 +76,41 @@ class StrategyRuleTests(unittest.TestCase):
         self.assertAlmostEqual(setup.ep_fraction, 0.0056)
         self.assertAlmostEqual(setup.r1_target, 100.4 * 1.0056)
 
+    def test_trigger_below_point_two_percent_multiplies_range_by_two(self):
+        self.valid_trigger(100.15, 100.0)
+        setup = self.strategy.setup
+        self.assertAlmostEqual(setup.trigger_range_fraction, 0.0015)
+        self.assertAlmostEqual(setup.ep_fraction, 0.003)
+        self.assertAlmostEqual(setup.r1_target, 100.15 * 1.003)
+
     def test_trigger_at_or_above_half_percent_adds_point_one_percent(self):
         self.valid_trigger(100.52, 100.0)
         setup = self.strategy.setup
         self.assertAlmostEqual(setup.trigger_range_fraction, 0.0052)
         self.assertAlmostEqual(setup.ep_fraction, 0.0062)
         self.assertAlmostEqual(setup.r1_target, 100.52 * 1.0062)
+
+    def test_trigger_above_point_six_percent_is_rejected(self):
+        self.valid_trigger(100.61, 100.0)
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertIn(
+            "TRIGGER_RANGE_ABOVE_0_60_PERCENT",
+            self.events[-1][1]["reasons"],
+        )
+
+    def test_pretrigger_green_above_point_eight_five_percent_discards(self):
+        self.strategy.on_three_minute(c3("09:21", 100.0, 100.86, 100.0, 100.8))
+        self.assertEqual(self.strategy.state, "DONE")
+        self.assertEqual(
+            self.events[-1][1]["outcome"],
+            "PRETRIGGER_GREEN_RANGE_ABOVE_0_85_PERCENT",
+        )
+
+    def test_large_green_route_threshold_is_strictly_above_point_five_five(self):
+        self.strategy.on_three_minute(c3("09:21", 100.0, 100.55, 100.0, 100.5))
+        self.assertIsNone(self.strategy.large_pretrigger_green)
+        self.strategy.on_three_minute(c3("09:24", 100.0, 100.56, 100.0, 100.5))
+        self.assertIsNotNone(self.strategy.large_pretrigger_green)
 
     def test_first_green_within_next_three_becomes_g1(self):
         self.valid_trigger()
@@ -157,11 +186,11 @@ class StrategyRuleTests(unittest.TestCase):
         self.assertIsNone(position)
         self.assertEqual(self.strategy.state, "DONE")
 
-    def test_target_is_minimum_of_r1_and_three_r(self):
+    def test_target_is_minimum_of_r1_and_range_based_r2(self):
         self.valid_trigger()
         self.add_g1()
         position = self.strategy.on_entry_tick(moment("09:34:10"), 100.51)
-        expected_r2 = 100.51 + 3 * (100.51 - 100.0)
+        expected_r2 = 100.51 + 1.5 * (100.51 - 100.0)
         self.assertAlmostEqual(position.r2_target, expected_r2)
         self.assertAlmostEqual(
             position.tp1_target, min(self.strategy.setup.r1_target, expected_r2)
@@ -232,7 +261,7 @@ class StrategyRuleTests(unittest.TestCase):
             "NO_1M_CLOSE_ABOVE_TRIGGER_IN_SIX_CANDLES",
         )
 
-    def test_b1_break_uses_b1_low_stop_and_two_point_two_r_without_ema(self):
+    def test_wide_b1_uses_b1_low_stop_and_one_point_two_r_without_ema(self):
         self.valid_trigger_with_large_green()
         self.strategy.on_one_minute(c1("09:33", 100.2, 100.8, 100.1, 100.6))
         self.strategy.on_entry_tick(moment("09:34:05"), 100.79)
@@ -244,8 +273,20 @@ class StrategyRuleTests(unittest.TestCase):
         self.assertAlmostEqual(position.initial_sl, 100.1)
         self.assertAlmostEqual(
             position.tp1_target,
-            100.81 + 2.2 * (100.81 - 100.1),
+            100.81 + 1.2 * (100.81 - 100.1),
         )
+
+    def test_b1_range_target_bands(self):
+        self.assertEqual(self.strategy._b1_target_r_multiple(0.0009), 3.0)
+        self.assertEqual(self.strategy._b1_target_r_multiple(0.0010), 2.0)
+        self.assertEqual(self.strategy._b1_target_r_multiple(0.0035), 2.0)
+        self.assertEqual(self.strategy._b1_target_r_multiple(0.0036), 1.2)
+
+    def test_g1_range_target_bands(self):
+        self.assertEqual(self.strategy._g1_target_r_multiple(0.0007), 5.0)
+        self.assertEqual(self.strategy._g1_target_r_multiple(0.0008), 1.3)
+        self.assertEqual(self.strategy._g1_target_r_multiple(0.0030), 1.3)
+        self.assertEqual(self.strategy._g1_target_r_multiple(0.0031), 1.5)
 
     def test_b1_high_must_break_in_immediately_next_one_minute_candle(self):
         self.valid_trigger_with_large_green()

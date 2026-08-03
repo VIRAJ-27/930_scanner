@@ -21,6 +21,7 @@ from scanner930.config import (
     REPORT_REFRESH_SECONDS,
     SERVICE_STOP,
     SINGLE_INSTANCE_PORT,
+    STRATEGY_NAME,
     TIMEZONE,
 )
 from scanner930.instruments import EquityCatalog, download_instrument_master
@@ -184,7 +185,7 @@ def main() -> None:
     worker = threading.Thread(target=market_data.connect, daemon=True)
     worker.start()
     notifier.send_text(
-        f"Scanner930 started in {mode} mode. Monitoring "
+        f"Scanner930 started in {mode} mode with {STRATEGY_NAME}. Monitoring "
         f"{len(catalog.by_token)} F&O stocks; entries remain strategy-controlled."
     )
 
@@ -270,9 +271,15 @@ def main() -> None:
                 ],
             )
         notifier.close()
+        notification_error = notifier.last_error
         store.close()
         instance_lock.close()
         print("9:30 scanner stopped; open paper/live positions were squared off.")
+        if notification_error:
+            raise RuntimeError(
+                "One or more Telegram/email notifications failed; see the "
+                "sanitized notification error above."
+            )
 
 
 if __name__ == "__main__":

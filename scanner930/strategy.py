@@ -7,16 +7,27 @@ from .config import (
     B1_CONFIRM_CANDLE_COUNT,
     B1_ENTRY_CANDLE_COUNT,
     B1_SEARCH_CANDLE_COUNT,
+    B1_TIGHT_RANGE_THRESHOLD,
+    B1_TIGHT_TP1_R_MULTIPLE,
     B1_TP1_R_MULTIPLE,
+    B1_WIDE_RANGE_THRESHOLD,
+    B1_WIDE_TP1_R_MULTIPLE,
     EMA_PERIOD,
     ENTRY_SEARCH_CANDLE_COUNT,
     G1_SEARCH_CANDLE_COUNT,
+    G1_MIDDLE_TP1_R_MULTIPLE,
+    G1_TIGHT_RANGE_THRESHOLD,
+    G1_TIGHT_TP1_R_MULTIPLE,
+    G1_WIDE_RANGE_THRESHOLD,
+    G1_WIDE_TP1_R_MULTIPLE,
     LAST_TRIGGER_START,
     LARGE_GREEN_RANGE_THRESHOLD,
     NORMAL_EMA_3M_LOOKBACK_BARS,
     NORMAL_EMA_3M_MIN_RISE,
     PRETRIGGER_SCAN_START,
+    PRETRIGGER_GREEN_MAX_RANGE,
     QUANTITY,
+    RANGE_COMPARISON_EPSILON,
     RUNNER_QUANTITY,
     SILVER_EMA_1M_LOOKBACK_BARS,
     SILVER_EMA_1M_MIN_RISE,
@@ -24,7 +35,10 @@ from .config import (
     TRIGGER_RANGE_ADDEND,
     TRIGGER_RANGE_MULTIPLIER,
     TRIGGER_RANGE_THRESHOLD,
+    TRIGGER_MAX_RANGE,
     TRIGGER_START,
+    TRIGGER_TIGHT_RANGE_MULTIPLIER,
+    TRIGGER_TIGHT_RANGE_THRESHOLD,
     TP1_R_MULTIPLE,
 )
 from .models import Candle, Position, Setup
@@ -106,11 +120,21 @@ class ScannerStrategy:
                         self.state = "DONE"
                     else:
                         range_fraction = (candle.high - candle.low) / candle.low
-                        ep_fraction = (
-                            range_fraction * TRIGGER_RANGE_MULTIPLIER
-                            if range_fraction < TRIGGER_RANGE_THRESHOLD
-                            else range_fraction + TRIGGER_RANGE_ADDEND
-                        )
+                        if (
+                            range_fraction
+                            < TRIGGER_TIGHT_RANGE_THRESHOLD
+                            - RANGE_COMPARISON_EPSILON
+                        ):
+                            ep_fraction = (
+                                range_fraction * TRIGGER_TIGHT_RANGE_MULTIPLIER
+                            )
+                        elif (
+                            range_fraction
+                            < TRIGGER_RANGE_THRESHOLD - RANGE_COMPARISON_EPSILON
+                        ):
+                            ep_fraction = range_fraction * TRIGGER_RANGE_MULTIPLIER
+                        else:
+                            ep_fraction = range_fraction + TRIGGER_RANGE_ADDEND
                         r1_target = candle.high * (1.0 + ep_fraction)
                         window_start = candle.completion_time
                         self.attempts = 1
@@ -218,6 +242,7 @@ class ScannerStrategy:
                 return None
             if candle.close > trigger.high:
                 self.setup.b1 = candle
+                self.setup.b1_range_fraction = self._candle_range_fraction(candle)
                 self.setup.entry_window_start = candle.completion_time
                 self.setup.entry_window_end = candle.completion_time + timedelta(
                     minutes=B1_ENTRY_CANDLE_COUNT
@@ -288,6 +313,7 @@ class ScannerStrategy:
                 return None
             if candle.green:
                 self.setup.g1 = candle
+                self.setup.g1_range_fraction = self._candle_range_fraction(candle)
                 self.setup.entry_window_start = candle.start + timedelta(minutes=1)
                 self.setup.entry_window_end = (
                     self.setup.entry_window_start
@@ -365,7 +391,11 @@ class ScannerStrategy:
                 self._discard_day(timestamp, price, "NON_POSITIVE_B1_RISK")
                 return None
             self.setup.entry_tier = "B1"
-            target = price + B1_TP1_R_MULTIPLE * risk
+            target_r_multiple = self._b1_target_r_multiple(
+                self.setup.b1_range_fraction
+            )
+            self.setup.target_r_multiple = target_r_multiple
+            target = price + target_r_multiple * risk
             return self._open_position(
                 timestamp,
                 price,
@@ -400,7 +430,11 @@ class ScannerStrategy:
             )
             return None
         self.setup.entry_tier = entry_tier
-        r2_target = price + TP1_R_MULTIPLE * risk
+        target_r_multiple = self._g1_target_r_multiple(
+            self.setup.g1_range_fraction
+        )
+        self.setup.target_r_multiple = target_r_multiple
+        r2_target = price + target_r_multiple * risk
         target = min(self.setup.r1_target, r2_target)
         return self._open_position(
             timestamp,
@@ -450,6 +484,12 @@ class ScannerStrategy:
             b1_low=setup.b1.low if setup.b1 is not None else None,
             b1_confirmation_end=setup.b1_confirmation_end,
             large_green_range_fraction=setup.large_green_range_fraction,
+            reference_range_fraction=(
+                setup.b1_range_fraction
+                if entry_mode == "B1_HIGH_BREAK"
+                else setup.g1_range_fraction
+            ),
+            target_r_multiple=setup.target_r_multiple,
         )
         self.state = "POSITION"
         setup.outcome = "ENTRY"
@@ -475,10 +515,15 @@ class ScannerStrategy:
                 "r1": setup.r1_target,
                 "r2": r2_target,
                 "tp1": target,
-                "target_driver": (
-                    "R2_2.2R"
-                    if entry_mode == "B1_HIGH_BREAK"
-                    else "R1" if setup.r1_target <= r2_target else "R2"
+                "reference_range_percent": self._percent(
+                    self.position.reference_range_fraction
+                ),
+                "target_r_multiple": setup.target_r_multiple,
+                "target_driver": self._target_driver(
+                    entry_mode,
+                    setup.r1_target,
+                    r2_target,
+                    setup.target_r_multiple,
                 ),
                 "g1": setup.g1.details() if setup.g1 is not None else None,
                 "b1": setup.b1.details() if setup.b1 is not None else None,
@@ -533,6 +578,12 @@ class ScannerStrategy:
             reasons.append("OUTSIDE_TRIGGER_WINDOW")
         if not candle.red:
             reasons.append("NOT_RED")
+        if (
+            candle.low <= 0
+            or self._candle_range_fraction(candle)
+            > TRIGGER_MAX_RANGE + RANGE_COMPARISON_EPSILON
+        ):
+            reasons.append("TRIGGER_RANGE_ABOVE_0_60_PERCENT")
         if candle.vwap is None or candle.close <= candle.vwap:
             reasons.append("TRIGGER_NOT_ABOVE_VWAP")
         if previous is None or previous.start + timedelta(minutes=3) != candle.start:
@@ -599,7 +650,21 @@ class ScannerStrategy:
         if not candle.green or candle.low <= 0:
             return
         range_fraction = (candle.high - candle.low) / candle.low
-        if range_fraction <= LARGE_GREEN_RANGE_THRESHOLD:
+        if (
+            range_fraction
+            > PRETRIGGER_GREEN_MAX_RANGE + RANGE_COMPARISON_EPSILON
+        ):
+            self._discard_day(
+                candle.completion_time,
+                candle.close,
+                "PRETRIGGER_GREEN_RANGE_ABOVE_0_85_PERCENT",
+                {
+                    "green_candle": candle.details(),
+                    "green_range_percent": range_fraction * 100,
+                },
+            )
+            return
+        if range_fraction <= LARGE_GREEN_RANGE_THRESHOLD + RANGE_COMPARISON_EPSILON:
             return
         if (
             self.large_pretrigger_green_range is None
@@ -607,6 +672,57 @@ class ScannerStrategy:
         ):
             self.large_pretrigger_green = candle
             self.large_pretrigger_green_range = range_fraction
+
+    @staticmethod
+    def _candle_range_fraction(candle: Candle) -> float:
+        if candle.low <= 0:
+            return float("inf")
+        return (candle.high - candle.low) / candle.low
+
+    @staticmethod
+    def _b1_target_r_multiple(range_fraction: float | None) -> float:
+        if (
+            range_fraction is not None
+            and range_fraction
+            < B1_TIGHT_RANGE_THRESHOLD - RANGE_COMPARISON_EPSILON
+        ):
+            return B1_TIGHT_TP1_R_MULTIPLE
+        if (
+            range_fraction is not None
+            and range_fraction
+            > B1_WIDE_RANGE_THRESHOLD + RANGE_COMPARISON_EPSILON
+        ):
+            return B1_WIDE_TP1_R_MULTIPLE
+        return B1_TP1_R_MULTIPLE
+
+    @staticmethod
+    def _g1_target_r_multiple(range_fraction: float | None) -> float:
+        if (
+            range_fraction is not None
+            and range_fraction
+            < G1_TIGHT_RANGE_THRESHOLD - RANGE_COMPARISON_EPSILON
+        ):
+            return G1_TIGHT_TP1_R_MULTIPLE
+        if (
+            range_fraction is not None
+            and range_fraction
+            > G1_WIDE_RANGE_THRESHOLD + RANGE_COMPARISON_EPSILON
+        ):
+            return G1_WIDE_TP1_R_MULTIPLE
+        return G1_MIDDLE_TP1_R_MULTIPLE
+
+    @staticmethod
+    def _target_driver(
+        entry_mode: str,
+        r1_target: float | None,
+        r2_target: float,
+        target_r_multiple: float | None,
+    ) -> str:
+        multiple = target_r_multiple or 0.0
+        r2_label = f"R2_{multiple:g}R"
+        if entry_mode == "B1_HIGH_BREAK":
+            return r2_label
+        return "R1" if r1_target is not None and r1_target <= r2_target else r2_label
 
     def _classify_entry(self) -> tuple[str | None, dict]:
         setup = self.setup

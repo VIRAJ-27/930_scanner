@@ -62,6 +62,9 @@ class Setup:
     ema_3m_rise_fraction: float | None = None
     ema_1m_rise_fraction: float | None = None
     g1_body_fraction: float | None = None
+    g1_range_fraction: float | None = None
+    b1_range_fraction: float | None = None
+    target_r_multiple: float | None = None
     outcome: str = ""
 
 
@@ -90,6 +93,8 @@ class Position:
     b1_confirmation_end: datetime | None = None
     b1_close_confirmed: bool = False
     large_green_range_fraction: float | None = None
+    reference_range_fraction: float | None = None
+    target_r_multiple: float | None = None
     tp1_touched: bool = False
     tp1_touch_time: datetime | None = None
     tp1_minute: datetime | None = None

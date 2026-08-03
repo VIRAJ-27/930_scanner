@@ -435,12 +435,19 @@ def new_trade_record(trading_day, position, trigger, reference, setup, entry_min
         "Post3mSL": None,
         "RiskPerShare": position.entry_price - position.initial_sl,
         "RiskPercent": (position.entry_price - position.initial_sl) / position.entry_price * 100,
+        "ReferenceRangePercent": (
+            None
+            if position.reference_range_fraction is None
+            else position.reference_range_fraction * 100
+        ),
+        "TargetRMultiple": position.target_r_multiple,
         "R2Target": position.r2_target,
         "TP1Target": position.tp1_target,
-        "TargetDriver": (
-            "R2_2.2R"
-            if position.entry_mode == "B1_HIGH_BREAK"
-            else "R1" if position.r1_target <= position.r2_target else "R2"
+        "TargetDriver": ScannerStrategy._target_driver(
+            position.entry_mode,
+            position.r1_target,
+            position.r2_target,
+            position.target_r_multiple,
         ),
         "TP1TouchTime": "",
         "TP1ExitTime": "",
@@ -677,9 +684,10 @@ def main():
         "Notes": [
             "HLC3 session VWAP resets at 09:15 IST.",
             "The first red 3m Trigger among 09:30, 09:33 and 09:36 uses the unchanged validation rules.",
-            "If any green 3m candle from 09:21 through the candle before Trigger has range above 0.60%, the large-green B1 path applies.",
+            "A pre-Trigger green 3m range above 0.85% discards; above 0.55% selects the large-green B1 path.",
+            "A Trigger range above 0.60% discards the stock.",
             "Large-green path: first close above Trigger high within six 1m candles is B1; B1 high must break in the immediately next 1m candle.",
-            "Large-green B1 entries bypass Normal/Silver filters, use B1 low as SL, and target 2.2R without the R1 cap.",
+            "B1 entries use B1 low as SL and range targets of 3R below 0.10%, 2R through 0.35%, and 1.2R above 0.35% without the R1 cap.",
             "After B1 entry, X1/X2/X3 must include a close above B1 high; otherwise exit at the X3 close.",
             "G1 is the first green candle in the next three 1m candles.",
             "Entry is a strict G1-high break only in the immediately next 1m candle.",
@@ -687,8 +695,8 @@ def main():
             "Normal: when Silver fails, completed 3m EMA20 rises at least 0.01% over two candles.",
             "Silver has precedence; entries passing neither tier are discarded.",
             "Trigger/G1-low breaks before entry discard the stock.",
-            "EP is Trigger range x1.4 below 0.50%, otherwise range +0.10 percentage points.",
-            "TP1 is min(R1 from Trigger high, R2 at 3R from entry/Trigger low).",
+            "EP is Trigger range x2 below 0.20%, x1.4 through 0.50%, otherwise range +0.10 percentage points.",
+            "Normal/Silver R2 is 5R below 0.08% G1 range, 1.3R through 0.30%, and 1.5R above; TP1 is min(R1,R2).",
             "100 shares: 70 exit at TP1 close; 30 trail after SL moves to Trigger high.",
             "After entry, a completed 3m close above Trigger high moves SL to G1 low.",
             "After TP1, completed 5m candle lows trail monotonically.",

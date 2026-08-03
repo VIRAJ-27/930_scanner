@@ -98,12 +98,17 @@ def main() -> None:
                 "Trigger",
                 "First red 3m candle among 09:30, 09:33 and 09:36 is the only candidate; "
                 "must close above VWAP and inside previous green 3m range, "
-                "otherwise discard stock for the day",
+                "and its full range must not exceed 0.60%; otherwise discard stock for the day",
+            ),
+            (
+                "Oversized pre-trigger green",
+                "Discard if any green 3m candle from 09:21 through the candle before Trigger "
+                "has (High-Low)/Low strictly above 0.85%",
             ),
             (
                 "Large-green route",
                 "If any green 3m candle from 09:21 through the candle before Trigger "
-                "has (High-Low)/Low strictly above 0.60%, use the B1 route",
+                "has (High-Low)/Low strictly above 0.55%, use the B1 route",
             ),
             (
                 "B1 close",
@@ -116,7 +121,8 @@ def main() -> None:
             ),
             (
                 "B1 risk",
-                "B1 low is the initial SL; TP1 is exactly 2.2R and R1 cap is ignored",
+                "B1 low is the initial SL; B1 range <0.10% targets 3R, "
+                "0.10%-0.35% targets 2R, and >0.35% targets 1.2R; R1 cap is ignored",
             ),
             (
                 "B1 close confirmation",
@@ -149,13 +155,14 @@ def main() -> None:
             ),
             (
                 "EP and R1",
-                "Trigger range <0.50% uses range x1.4; otherwise adds 0.10 "
-                "percentage points; R1 is EP% above Trigger high",
+                "Trigger range <0.20% uses range x2; 0.20%-<0.50% uses range x1.4; "
+                "0.50%-0.60% adds 0.10 percentage points; R1 is EP% above Trigger high",
             ),
             (
                 "TP1",
-                "Minimum of R1 and entry + 3x(entry-Trigger low); sell 70 "
-                "shares at target-touch 1m candle close",
+                "For Normal/Silver, G1 range <0.08% uses 5R, 0.08%-0.30% uses "
+                "1.3R, and >0.30% uses 1.5R; TP1 is the minimum of R1 and R2; "
+                "sell 70 shares at target-touch 1m candle close",
             ),
             (
                 "Runner",
@@ -230,14 +237,14 @@ def main() -> None:
             else 0
         ),
         "R2TargetTrades": (
-            int((trades["TargetDriver"] == "R2").sum())
+            int(trades["TargetDriver"].astype(str).str.startswith("R2_").sum())
             if not trades.empty
             else 0
         ),
-        "B1TwoPointTwoRTargetTrades": (
-            int((trades["TargetDriver"] == "R2_2.2R").sum())
+        "TargetDriverCounts": (
+            trades["TargetDriver"].value_counts().to_dict()
             if not trades.empty
-            else 0
+            else {}
         ),
         "InitialSLTrades": (
             int((trades["ExitReason"] == "INITIAL_SL").sum())

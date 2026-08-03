@@ -12,6 +12,7 @@ from scanner930.option_paper import (
     OptionQuote,
     SmartApiOptionQuoteProvider,
 )
+from scanner930.reports import option_daily_message
 from scanner930.storage import SQLiteStore
 
 
@@ -55,6 +56,12 @@ class OptionPaperTests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
         self.temp.cleanup()
+
+    def test_daily_message_identifies_deployed_strategy(self):
+        self.store.flush()
+        message = option_daily_message(self.store.path, date(2026, 8, 3))
+        self.assertIn("Strategy: TRIGGER_RANGE", message)
+        self.assertIn("Realized option P&L: ₹0.00", message)
 
     def test_dense_strikes_use_mathematical_nearest(self):
         catalog = OptionCatalog([

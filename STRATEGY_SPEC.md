@@ -30,14 +30,15 @@ For each candle calculate:
 
 `Range% = (High - Low) / Low x 100`
 
-If any such green candle has `Range% > 0.60%`, use the large-green B1 route.
-The threshold is strict: exactly 0.60% remains on the standard route. The
+If any such green candle has `Range% > 0.85%`, discard the stock for the day.
+Otherwise, if any green candle has `Range% > 0.55%`, use the large-green B1
+route. Both thresholds are strict: exact boundary values remain allowed. The
 largest qualifying range is retained in the audit report. If no candle
 qualifies, use the standard G1 route below.
 
 ## Large-green B1 entry
 
-- Trigger validation remains unchanged.
+- Trigger range must be no greater than 0.60%; a larger Trigger is rejected.
 - Inspect only the first six completed 1-minute candles after the Trigger.
 - The first candle that closes strictly above Trigger high is B1.
 - If none of those six candles closes above Trigger high, discard the stock.
@@ -46,8 +47,9 @@ qualifies, use the standard G1 route below.
 - If X1 does not break B1 high, discard the stock for the day.
 - B1 entries do not use the Normal or Silver EMA entry-quality filters.
 - The initial stop after entry is B1 low.
-- TP1 is exactly `Entry + 2.2 x (Entry - B1 low)`. The Trigger-percentage
-  R1 cap does not apply to this route.
+- TP1 depends on B1's full range: below 0.10% uses 3R; from 0.10% through
+  0.35% uses 2R; above 0.35% uses 1.2R. The Trigger-percentage R1 cap does
+  not apply to this route.
 - From B1, inspect X1, X2 and X3. At least one must close strictly above B1
   high. A high break without such a close does not satisfy confirmation.
 - If none closes above B1 high, exit the open position at X3's close and label
@@ -80,7 +82,7 @@ EMA20 is continuous across trading sessions. Backtests warm it with all
 available candles before the requested start date, and a continuously running
 live process preserves its completed-candle EMA history across day resets.
 
-The backtest uses one NSE tick above G1 high and assumes the low-side failure
+The backtest retains a 0.05 breakout buffer above G1/B1 high and assumes the low-side failure
 occurs first when both sides are present in the next 1-minute OHLC candle.
 
 ## Percentage target
@@ -91,13 +93,15 @@ Trigger range percentage:
 
 EP percentage:
 
-- if `TriggerRange% < 0.50%`, `EP% = TriggerRange% × 1.4`;
-- if `TriggerRange% >= 0.50%`, `EP% = TriggerRange% + 0.10%`.
+- if `TriggerRange% < 0.20%`, `EP% = TriggerRange% × 2`;
+- if `0.20% <= TriggerRange% < 0.50%`, `EP% = TriggerRange% × 1.4`;
+- if `0.50% <= TriggerRange% <= 0.60%`, `EP% = TriggerRange% + 0.10%`.
 
 Levels:
 
 - `R1 = Trigger High × (1 + EP% / 100)`;
-- `R2 = Entry + 3 × (Entry - Trigger Low)`;
+- for Normal/Silver, G1 range below 0.08% makes R2 equal 5R; from 0.08%
+  through 0.30% makes R2 equal 1.3R; above 0.30% makes R2 equal 1.5R;
 - `TP1 = minimum(R1, R2)`.
 
 If entry itself is already at or above TP1, TP1 is considered touched and the
