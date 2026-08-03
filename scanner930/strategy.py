@@ -4,13 +4,30 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 from .config import (
+    B1_CONFIRM_CANDLE_COUNT,
+    B1_ENTRY_CANDLE_COUNT,
+    B1_SEARCH_CANDLE_COUNT,
+    B1_TIGHT_RANGE_THRESHOLD,
+    B1_TIGHT_TP1_R_MULTIPLE,
+    B1_TP1_R_MULTIPLE,
+    B1_WIDE_RANGE_THRESHOLD,
+    B1_WIDE_TP1_R_MULTIPLE,
     EMA_PERIOD,
     ENTRY_SEARCH_CANDLE_COUNT,
     G1_SEARCH_CANDLE_COUNT,
+    G1_MIDDLE_TP1_R_MULTIPLE,
+    G1_TIGHT_RANGE_THRESHOLD,
+    G1_TIGHT_TP1_R_MULTIPLE,
+    G1_WIDE_RANGE_THRESHOLD,
+    G1_WIDE_TP1_R_MULTIPLE,
     LAST_TRIGGER_START,
+    LARGE_GREEN_RANGE_THRESHOLD,
     NORMAL_EMA_3M_LOOKBACK_BARS,
     NORMAL_EMA_3M_MIN_RISE,
+    PRETRIGGER_SCAN_START,
+    PRETRIGGER_GREEN_MAX_RANGE,
     QUANTITY,
+    RANGE_COMPARISON_EPSILON,
     RUNNER_QUANTITY,
     SILVER_EMA_1M_LOOKBACK_BARS,
     SILVER_EMA_1M_MIN_RISE,
@@ -18,14 +35,17 @@ from .config import (
     TRIGGER_RANGE_ADDEND,
     TRIGGER_RANGE_MULTIPLIER,
     TRIGGER_RANGE_THRESHOLD,
+    TRIGGER_MAX_RANGE,
     TRIGGER_START,
+    TRIGGER_TIGHT_RANGE_MULTIPLIER,
+    TRIGGER_TIGHT_RANGE_THRESHOLD,
     TP1_R_MULTIPLE,
 )
 from .models import Candle, Position, Setup
 
 
 class ScannerStrategy:
-    """First-red Trigger -> G1 -> percentage-capped TP1 state machine."""
+    """First-red Trigger with standard G1 or large-green B1 entry paths."""
 
     def __init__(self, symbol: str, emit: Callable[..., None]):
         self.symbol = symbol
@@ -38,6 +58,8 @@ class ScannerStrategy:
         self.tp1_ever_hit = False
         self.ema20_1m: list[float] = []
         self.ema20_3m: list[float] = []
+        self.large_pretrigger_green: Candle | None = None
+        self.large_pretrigger_green_range: float | None = None
 
     @property
     def done(self) -> bool:
@@ -45,10 +67,12 @@ class ScannerStrategy:
 
     def on_three_minute(self, candle: Candle) -> None:
         self._append_ema(self.ema20_3m, candle.close)
+        self._remember_large_pretrigger_green(candle)
         position = self.position
         if position is not None and position.open_quantity > 0:
             if (
                 self.setup is not None
+                and position.entry_mode == "G1_HIGH_BREAK"
                 and self.setup.g1 is not None
                 and candle.close > self.setup.trigger.high
             ):
@@ -96,11 +120,21 @@ class ScannerStrategy:
                         self.state = "DONE"
                     else:
                         range_fraction = (candle.high - candle.low) / candle.low
-                        ep_fraction = (
-                            range_fraction * TRIGGER_RANGE_MULTIPLIER
-                            if range_fraction < TRIGGER_RANGE_THRESHOLD
-                            else range_fraction + TRIGGER_RANGE_ADDEND
-                        )
+                        if (
+                            range_fraction
+                            < TRIGGER_TIGHT_RANGE_THRESHOLD
+                            - RANGE_COMPARISON_EPSILON
+                        ):
+                            ep_fraction = (
+                                range_fraction * TRIGGER_TIGHT_RANGE_MULTIPLIER
+                            )
+                        elif (
+                            range_fraction
+                            < TRIGGER_RANGE_THRESHOLD - RANGE_COMPARISON_EPSILON
+                        ):
+                            ep_fraction = range_fraction * TRIGGER_RANGE_MULTIPLIER
+                        else:
+                            ep_fraction = range_fraction + TRIGGER_RANGE_ADDEND
                         r1_target = candle.high * (1.0 + ep_fraction)
                         window_start = candle.completion_time
                         self.attempts = 1
@@ -113,8 +147,23 @@ class ScannerStrategy:
                             trigger_range_fraction=range_fraction,
                             ep_fraction=ep_fraction,
                             r1_target=r1_target,
+                            entry_path=(
+                                "LARGE_GREEN_B1"
+                                if self.large_pretrigger_green is not None
+                                else "STANDARD_G1"
+                            ),
+                            large_green_candle=self.large_pretrigger_green,
+                            large_green_range_fraction=(
+                                self.large_pretrigger_green_range
+                            ),
                         )
-                        self.state = "WAIT_G1"
+                        if self.setup.entry_path == "LARGE_GREEN_B1":
+                            self.setup.b1_window_end = window_start + timedelta(
+                                minutes=B1_SEARCH_CANDLE_COUNT
+                            )
+                            self.state = "WAIT_B1"
+                        else:
+                            self.state = "WAIT_G1"
                         self.emit(
                             candle.completion_time,
                             "TRIGGER_VALID",
@@ -124,8 +173,18 @@ class ScannerStrategy:
                                 "trigger_range_percent": range_fraction * 100,
                                 "ep_percent": ep_fraction * 100,
                                 "r1": r1_target,
+                                "entry_path": self.setup.entry_path,
+                                "large_green_range_percent": self._percent(
+                                    self.setup.large_green_range_fraction
+                                ),
+                                "large_green_candle": (
+                                    None
+                                    if self.setup.large_green_candle is None
+                                    else self.setup.large_green_candle.details()
+                                ),
                                 "g1_window_start": window_start,
                                 "g1_window_end": self.setup.g1_window_end,
+                                "b1_window_end": self.setup.b1_window_end,
                             },
                         )
                 elif candle.start.time() == LAST_TRIGGER_START:
@@ -154,10 +213,12 @@ class ScannerStrategy:
                 {"old_sl": old, "new_sl": position.current_sl},
             )
 
-    def on_one_minute(self, candle: Candle) -> None:
+    def on_one_minute(self, candle: Candle) -> str | None:
         self._append_ema(self.ema20_1m, candle.close)
-        if self.setup is None or self.position is not None or self.done:
-            return
+        if self.setup is None or self.done:
+            return None
+        if self.position is not None:
+            return self._monitor_b1_close_confirmation(candle)
         trigger = self.setup.trigger
         if candle.low < trigger.low:
             self._discard_day(
@@ -165,22 +226,94 @@ class ScannerStrategy:
                 candle.low,
                 "BROKE_TRIGGER_LOW_BEFORE_ENTRY",
             )
-            return
+            return None
+
+        if self.state == "WAIT_B1":
+            start = trigger.completion_time
+            end = self.setup.b1_window_end
+            if end is None or candle.start < start:
+                return None
+            if candle.start >= end:
+                self._discard_day(
+                    candle.completion_time,
+                    candle.close,
+                    "NO_1M_CLOSE_ABOVE_TRIGGER_IN_SIX_CANDLES",
+                )
+                return None
+            if candle.close > trigger.high:
+                self.setup.b1 = candle
+                self.setup.b1_range_fraction = self._candle_range_fraction(candle)
+                self.setup.entry_window_start = candle.completion_time
+                self.setup.entry_window_end = candle.completion_time + timedelta(
+                    minutes=B1_ENTRY_CANDLE_COUNT
+                )
+                self.setup.b1_confirmation_end = candle.completion_time + timedelta(
+                    minutes=B1_CONFIRM_CANDLE_COUNT
+                )
+                self.state = "WAIT_B1_BREAK"
+                self.emit(
+                    candle.completion_time,
+                    "B1_VALID",
+                    candle.close,
+                    {
+                        "setup_number": 1,
+                        "entry_path": "LARGE_GREEN_B1",
+                        "b1": candle.details(),
+                        "entry_window_start": self.setup.entry_window_start,
+                        "entry_window_end": self.setup.entry_window_end,
+                        "confirmation_window_end": self.setup.b1_confirmation_end,
+                    },
+                )
+            elif candle.completion_time >= end:
+                self._discard_day(
+                    candle.completion_time,
+                    candle.close,
+                    "NO_1M_CLOSE_ABOVE_TRIGGER_IN_SIX_CANDLES",
+                )
+            return None
+
+        if self.state == "WAIT_B1_BREAK" and self.setup.b1 is not None:
+            start = self.setup.entry_window_start
+            end = self.setup.entry_window_end
+            if start is None or end is None or candle.start < start:
+                return None
+            if candle.start >= end:
+                self._discard_day(
+                    candle.completion_time,
+                    candle.close,
+                    "NO_B1_HIGH_BREAK_IN_NEXT_1M_CANDLE",
+                )
+                return None
+            if candle.high > self.setup.b1.high:
+                self._discard_day(
+                    candle.completion_time,
+                    candle.close,
+                    "MISSED_INTRAMINUTE_B1_HIGH_BREAK",
+                )
+                return None
+            if candle.completion_time >= end:
+                self._discard_day(
+                    candle.completion_time,
+                    candle.close,
+                    "NO_B1_HIGH_BREAK_IN_NEXT_1M_CANDLE",
+                )
+            return None
 
         if self.state == "WAIT_G1":
             start = self.setup.g1_window_start
             end = self.setup.g1_window_end
             if start is None or end is None or candle.start < start:
-                return
+                return None
             if candle.start >= end:
                 self._discard_day(
                     candle.completion_time,
                     candle.close,
                     "G1_WINDOW_EXPIRED",
                 )
-                return
+                return None
             if candle.green:
                 self.setup.g1 = candle
+                self.setup.g1_range_fraction = self._candle_range_fraction(candle)
                 self.setup.entry_window_start = candle.start + timedelta(minutes=1)
                 self.setup.entry_window_end = (
                     self.setup.entry_window_start
@@ -204,35 +337,35 @@ class ScannerStrategy:
                     candle.close,
                     "NO_GREEN_G1_IN_THREE_1M_CANDLES",
                 )
-            return
+            return None
 
         if self.state != "WAIT_ENTRY" or self.setup.g1 is None:
-            return
+            return None
         start = self.setup.entry_window_start
         end = self.setup.entry_window_end
         if start is None or end is None or candle.start < start:
-            return
+            return None
         if candle.start >= end:
             self._discard_day(
                 candle.completion_time,
                 candle.close,
                 "ENTRY_WINDOW_EXPIRED",
             )
-            return
+            return None
         if candle.low < self.setup.g1.low:
             self._discard_day(
                 candle.completion_time,
                 candle.low,
                 "ENTRY_CANDLE_BROKE_G1_LOW",
             )
-            return
+            return None
         if candle.high > self.setup.g1.high:
             self._discard_day(
                 candle.completion_time,
                 candle.close,
                 "MISSED_INTRAMINUTE_G1_HIGH_BREAK",
             )
-            return
+            return None
         if candle.start + timedelta(minutes=1) >= end:
             self._discard_day(
                 candle.completion_time,
@@ -246,6 +379,31 @@ class ScannerStrategy:
         if price < self.setup.trigger.low:
             self._discard_day(timestamp, price, "BROKE_TRIGGER_LOW_BEFORE_ENTRY")
             return None
+        if self.state == "WAIT_B1_BREAK" and self.setup.b1 is not None:
+            start = self.setup.entry_window_start
+            end = self.setup.entry_window_end
+            if start is None or end is None or timestamp < start or timestamp >= end:
+                return None
+            if price <= self.setup.b1.high:
+                return None
+            risk = price - self.setup.b1.low
+            if risk <= 0:
+                self._discard_day(timestamp, price, "NON_POSITIVE_B1_RISK")
+                return None
+            self.setup.entry_tier = "B1"
+            target_r_multiple = self._b1_target_r_multiple(
+                self.setup.b1_range_fraction
+            )
+            self.setup.target_r_multiple = target_r_multiple
+            target = price + target_r_multiple * risk
+            return self._open_position(
+                timestamp,
+                price,
+                target,
+                target,
+                initial_sl=self.setup.b1.low,
+                entry_mode="B1_HIGH_BREAK",
+            )
         if self.state != "WAIT_ENTRY" or self.setup.g1 is None:
             return None
         start = self.setup.entry_window_start
@@ -272,9 +430,20 @@ class ScannerStrategy:
             )
             return None
         self.setup.entry_tier = entry_tier
-        r2_target = price + TP1_R_MULTIPLE * risk
+        target_r_multiple = self._g1_target_r_multiple(
+            self.setup.g1_range_fraction
+        )
+        self.setup.target_r_multiple = target_r_multiple
+        r2_target = price + target_r_multiple * risk
         target = min(self.setup.r1_target, r2_target)
-        return self._open_position(timestamp, price, r2_target, target)
+        return self._open_position(
+            timestamp,
+            price,
+            r2_target,
+            target,
+            initial_sl=self.setup.trigger.low,
+            entry_mode="G1_HIGH_BREAK",
+        )
 
     def _open_position(
         self,
@@ -282,9 +451,14 @@ class ScannerStrategy:
         price: float,
         r2_target: float,
         target: float,
+        initial_sl: float,
+        entry_mode: str,
     ) -> Position:
         setup = self.setup
-        if setup is None or setup.g1 is None or setup.r1_target is None:
+        reference = setup.b1 if setup and entry_mode == "B1_HIGH_BREAK" else (
+            setup.g1 if setup else None
+        )
+        if setup is None or reference is None:
             raise RuntimeError("Entry attempted without a complete setup.")
         trade_id = f"{timestamp.date().isoformat()}-{self.symbol}-S1"
         self.position = Position(
@@ -293,19 +467,29 @@ class ScannerStrategy:
             setup_number=1,
             entry_time=timestamp,
             entry_price=price,
-            initial_sl=setup.trigger.low,
-            current_sl=setup.trigger.low,
+            initial_sl=initial_sl,
+            current_sl=initial_sl,
             tp1_target=target,
             open_quantity=QUANTITY,
-            entry_mode="G1_HIGH_BREAK",
+            entry_mode=entry_mode,
             entry_tier=setup.entry_tier or "",
             ema_3m_rise_fraction=setup.ema_3m_rise_fraction,
             ema_1m_rise_fraction=setup.ema_1m_rise_fraction,
             g1_body_fraction=setup.g1_body_fraction,
-            g1_low=setup.g1.low,
+            g1_low=setup.g1.low if setup.g1 is not None else None,
             trigger_high=setup.trigger.high,
             r1_target=setup.r1_target,
             r2_target=r2_target,
+            b1_high=setup.b1.high if setup.b1 is not None else None,
+            b1_low=setup.b1.low if setup.b1 is not None else None,
+            b1_confirmation_end=setup.b1_confirmation_end,
+            large_green_range_fraction=setup.large_green_range_fraction,
+            reference_range_fraction=(
+                setup.b1_range_fraction
+                if entry_mode == "B1_HIGH_BREAK"
+                else setup.g1_range_fraction
+            ),
+            target_r_multiple=setup.target_r_multiple,
         )
         self.state = "POSITION"
         setup.outcome = "ENTRY"
@@ -317,7 +501,8 @@ class ScannerStrategy:
                 "trade_id": trade_id,
                 "setup_number": 1,
                 "quantity": QUANTITY,
-                "entry_mode": "G1_HIGH_BREAK",
+                "entry_mode": entry_mode,
+                "entry_path": setup.entry_path,
                 "entry_tier": setup.entry_tier,
                 "ema_3m_rise_percent": self._percent(
                     setup.ema_3m_rise_fraction
@@ -326,12 +511,26 @@ class ScannerStrategy:
                     setup.ema_1m_rise_fraction
                 ),
                 "g1_body_percent": self._percent(setup.g1_body_fraction),
-                "sl": setup.trigger.low,
+                "sl": initial_sl,
                 "r1": setup.r1_target,
                 "r2": r2_target,
                 "tp1": target,
-                "target_driver": "R1" if setup.r1_target <= r2_target else "R2",
-                "g1": setup.g1.details(),
+                "reference_range_percent": self._percent(
+                    self.position.reference_range_fraction
+                ),
+                "target_r_multiple": setup.target_r_multiple,
+                "target_driver": self._target_driver(
+                    entry_mode,
+                    setup.r1_target,
+                    r2_target,
+                    setup.target_r_multiple,
+                ),
+                "g1": setup.g1.details() if setup.g1 is not None else None,
+                "b1": setup.b1.details() if setup.b1 is not None else None,
+                "b1_confirmation_end": setup.b1_confirmation_end,
+                "large_green_range_percent": self._percent(
+                    setup.large_green_range_fraction
+                ),
                 "outcome": "ENTRY",
             },
         )
@@ -356,7 +555,9 @@ class ScannerStrategy:
         position.tp1_exit_time = timestamp
         position.tp1_exit_price = price
         position.open_quantity = RUNNER_QUANTITY
-        if position.trigger_high is not None:
+        if position.entry_mode == "B1_HIGH_BREAK":
+            position.current_sl = max(position.current_sl, position.entry_price)
+        elif position.trigger_high is not None:
             position.current_sl = max(position.current_sl, position.trigger_high)
         self.tp1_ever_hit = True
 
@@ -377,6 +578,12 @@ class ScannerStrategy:
             reasons.append("OUTSIDE_TRIGGER_WINDOW")
         if not candle.red:
             reasons.append("NOT_RED")
+        if (
+            candle.low <= 0
+            or self._candle_range_fraction(candle)
+            > TRIGGER_MAX_RANGE + RANGE_COMPARISON_EPSILON
+        ):
+            reasons.append("TRIGGER_RANGE_ABOVE_0_60_PERCENT")
         if candle.vwap is None or candle.close <= candle.vwap:
             reasons.append("TRIGGER_NOT_ABOVE_VWAP")
         if previous is None or previous.start + timedelta(minutes=3) != candle.start:
@@ -389,6 +596,133 @@ class ScannerStrategy:
         if not (previous.low <= candle.close <= previous.high):
             reasons.append("TRIGGER_CLOSE_OUTSIDE_PREVIOUS_RANGE")
         return reasons
+
+    def _monitor_b1_close_confirmation(self, candle: Candle) -> str | None:
+        position = self.position
+        setup = self.setup
+        if (
+            position is None
+            or position.open_quantity <= 0
+            or position.entry_mode != "B1_HIGH_BREAK"
+            or position.b1_close_confirmed
+            or setup is None
+            or setup.b1 is None
+        ):
+            return None
+        start = setup.b1.completion_time
+        end = position.b1_confirmation_end
+        if end is None or candle.start < start or candle.start >= end:
+            return None
+        if candle.close > setup.b1.high:
+            position.b1_close_confirmed = True
+            self.emit(
+                candle.completion_time,
+                "B1_CLOSE_CONFIRMED",
+                candle.close,
+                {
+                    "trade_id": position.trade_id,
+                    "b1_high": setup.b1.high,
+                    "confirmed_candle": candle.details(),
+                },
+            )
+            return None
+        if candle.completion_time >= end:
+            self.emit(
+                candle.completion_time,
+                "B1_CONFIRMATION_FAILED",
+                candle.close,
+                {
+                    "trade_id": position.trade_id,
+                    "b1_high": setup.b1.high,
+                    "exit_rule": "THIRD_1M_CANDLE_CLOSE",
+                },
+            )
+            return "BE_EXIT_NO_CLOSE_ABOVE_B1_HIGH"
+        return None
+
+    def _remember_large_pretrigger_green(self, candle: Candle) -> None:
+        if self.state != "SEARCH_TRIGGER":
+            return
+        if not (PRETRIGGER_SCAN_START <= candle.start.time()):
+            return
+        if candle.start.time() >= TRIGGER_START and candle.red:
+            return
+        if not candle.green or candle.low <= 0:
+            return
+        range_fraction = (candle.high - candle.low) / candle.low
+        if (
+            range_fraction
+            > PRETRIGGER_GREEN_MAX_RANGE + RANGE_COMPARISON_EPSILON
+        ):
+            self._discard_day(
+                candle.completion_time,
+                candle.close,
+                "PRETRIGGER_GREEN_RANGE_ABOVE_0_85_PERCENT",
+                {
+                    "green_candle": candle.details(),
+                    "green_range_percent": range_fraction * 100,
+                },
+            )
+            return
+        if range_fraction <= LARGE_GREEN_RANGE_THRESHOLD + RANGE_COMPARISON_EPSILON:
+            return
+        if (
+            self.large_pretrigger_green_range is None
+            or range_fraction > self.large_pretrigger_green_range
+        ):
+            self.large_pretrigger_green = candle
+            self.large_pretrigger_green_range = range_fraction
+
+    @staticmethod
+    def _candle_range_fraction(candle: Candle) -> float:
+        if candle.low <= 0:
+            return float("inf")
+        return (candle.high - candle.low) / candle.low
+
+    @staticmethod
+    def _b1_target_r_multiple(range_fraction: float | None) -> float:
+        if (
+            range_fraction is not None
+            and range_fraction
+            < B1_TIGHT_RANGE_THRESHOLD - RANGE_COMPARISON_EPSILON
+        ):
+            return B1_TIGHT_TP1_R_MULTIPLE
+        if (
+            range_fraction is not None
+            and range_fraction
+            > B1_WIDE_RANGE_THRESHOLD + RANGE_COMPARISON_EPSILON
+        ):
+            return B1_WIDE_TP1_R_MULTIPLE
+        return B1_TP1_R_MULTIPLE
+
+    @staticmethod
+    def _g1_target_r_multiple(range_fraction: float | None) -> float:
+        if (
+            range_fraction is not None
+            and range_fraction
+            < G1_TIGHT_RANGE_THRESHOLD - RANGE_COMPARISON_EPSILON
+        ):
+            return G1_TIGHT_TP1_R_MULTIPLE
+        if (
+            range_fraction is not None
+            and range_fraction
+            > G1_WIDE_RANGE_THRESHOLD + RANGE_COMPARISON_EPSILON
+        ):
+            return G1_WIDE_TP1_R_MULTIPLE
+        return G1_MIDDLE_TP1_R_MULTIPLE
+
+    @staticmethod
+    def _target_driver(
+        entry_mode: str,
+        r1_target: float | None,
+        r2_target: float,
+        target_r_multiple: float | None,
+    ) -> str:
+        multiple = target_r_multiple or 0.0
+        r2_label = f"R2_{multiple:g}R"
+        if entry_mode == "B1_HIGH_BREAK":
+            return r2_label
+        return "R1" if r1_target is not None and r1_target <= r2_target else r2_label
 
     def _classify_entry(self) -> tuple[str | None, dict]:
         setup = self.setup

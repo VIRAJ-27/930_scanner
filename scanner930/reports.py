@@ -9,6 +9,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .config import STRATEGY_NAME
+
 
 QUERIES = {
     "OptionTradeBook": """
@@ -247,6 +249,7 @@ def option_daily_message(database_path: Path, trading_day: date) -> str:
     ]
     return (
         f"9:30 option paper report — {trading_day.isoformat()}\n"
+        f"Strategy: {STRATEGY_NAME}\n"
         f"Entries: {int(entries)} | Rejected: {int(rejected)}\n"
         f"Winners: {int(winners)} | Losers: {int(losers)}\n"
         f"Realized option P&L: ₹{float(pnl):,.2f}\n"

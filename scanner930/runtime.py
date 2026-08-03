@@ -138,7 +138,7 @@ class StockRuntime:
     def _on_one_minute(self, candle) -> None:
         if self.should_record():
             self.store.save_candle(candle)
-        self.strategy.on_one_minute(candle)
+        close_reason = self.strategy.on_one_minute(candle)
         position = self.strategy.position
         if position is None or position.open_quantity <= 0:
             return
@@ -152,6 +152,12 @@ class StockRuntime:
                 candle.completion_time,
                 candle.close,
                 "TP1_1M_CLOSE",
+            )
+        if close_reason and position.open_quantity > 0:
+            self._close_position(
+                candle.completion_time,
+                candle.close,
+                close_reason,
             )
 
     def _book_tp1(
@@ -295,6 +301,9 @@ class StockRuntime:
             "TRIGGER_VALID",
             "TRIGGER_REJECTED_FIRST_RED",
             "G1_VALID",
+            "B1_VALID",
+            "B1_CLOSE_CONFIRMED",
+            "B1_CONFIRMATION_FAILED",
             "SETUP_FAILED",
             "ENTRY_SIGNAL",
             "TP1_TOUCHED_AT_ENTRY",

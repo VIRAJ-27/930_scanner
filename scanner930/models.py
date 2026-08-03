@@ -47,6 +47,12 @@ class Setup:
     g1_window_start: datetime | None = None
     g1_window_end: datetime | None = None
     g1: Candle | None = None
+    b1: Candle | None = None
+    entry_path: str = "STANDARD_G1"
+    large_green_candle: Candle | None = None
+    large_green_range_fraction: float | None = None
+    b1_window_end: datetime | None = None
+    b1_confirmation_end: datetime | None = None
     entry_window_start: datetime | None = None
     entry_window_end: datetime | None = None
     trigger_range_fraction: float | None = None
@@ -56,6 +62,9 @@ class Setup:
     ema_3m_rise_fraction: float | None = None
     ema_1m_rise_fraction: float | None = None
     g1_body_fraction: float | None = None
+    g1_range_fraction: float | None = None
+    b1_range_fraction: float | None = None
+    target_r_multiple: float | None = None
     outcome: str = ""
 
 
@@ -79,6 +88,13 @@ class Position:
     trigger_high: float | None = None
     r1_target: float | None = None
     r2_target: float | None = None
+    b1_high: float | None = None
+    b1_low: float | None = None
+    b1_confirmation_end: datetime | None = None
+    b1_close_confirmed: bool = False
+    large_green_range_fraction: float | None = None
+    reference_range_fraction: float | None = None
+    target_r_multiple: float | None = None
     tp1_touched: bool = False
     tp1_touch_time: datetime | None = None
     tp1_minute: datetime | None = None

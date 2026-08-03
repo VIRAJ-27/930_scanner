@@ -25,8 +25,8 @@ restart recovery and the weekday 09:10 IST timer, see `deploy/README_VPS.md`.
 
 ### Free GitHub Actions schedule
 
-The workflow `.github/workflows/option-paper.yml` starts at 09:25 IST on
-weekdays and force-closes remaining positions at 11:00 with exit reason
+The workflow `.github/workflows/option-paper.yml` starts at 09:15 IST on
+weekdays, allowing a buffer for GitHub runner delays, and force-closes remaining positions at 11:00 with exit reason
 `TIME_EXIT_11_00`. It uses encrypted repository secrets and never enables live
 broker orders. Scheduled workflows run only from the default branch. See
 `deploy/README_GITHUB_ACTIONS.md` for secret setup and daily operation.

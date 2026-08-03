@@ -1,6 +1,6 @@
 # Free GitHub Actions option-paper runner
 
-This runner is intentionally paper-only. It starts at 09:25 IST every weekday,
+This runner is intentionally paper-only. It starts at 09:15 IST every weekday,
 uses the Angel One WebSocket for underlying-stock ticks, and force-closes every
 remaining position at 11:00 IST with `TIME_EXIT_11_00` in the trade report.
 
@@ -51,7 +51,7 @@ After the workflow is merged into the default branch:
 
 ## Daily schedule and outputs
 
-GitHub schedules the job at `03:55 UTC`, equal to `09:25 IST`, Monday-Friday.
+GitHub schedules the job at `03:45 UTC`, equal to `09:15 IST`, Monday-Friday.
 At completion it sends configured Telegram/email reports and uploads a private
 workflow artifact containing `LiveReports` and the SQLite audit database. Open
 the workflow run's **Artifacts** section to download it. Artifacts are retained
