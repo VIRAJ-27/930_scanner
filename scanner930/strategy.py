@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from statistics import median
 from typing import Callable
 
 from .config import (
@@ -20,6 +21,12 @@ from .config import (
     G1_TIGHT_TP1_R_MULTIPLE,
     G1_WIDE_RANGE_THRESHOLD,
     G1_WIDE_TP1_R_MULTIPLE,
+    ALPHA_REFERENCE_MAX_RANGE,
+    BETA_SAME_SLOT_RVOL10_MIN,
+    GAMMA_3M_RVOL20_MIN,
+    GOLDEN_QUANTITY_MULTIPLIER,
+    GOLDEN_TP1_R_MULTIPLE,
+    GOLDEN_TRIGGER_START,
     LAST_TRIGGER_START,
     LARGE_GREEN_RANGE_THRESHOLD,
     NORMAL_EMA_3M_LOOKBACK_BARS,
@@ -28,10 +35,14 @@ from .config import (
     PRETRIGGER_GREEN_MAX_RANGE,
     QUANTITY,
     RANGE_COMPARISON_EPSILON,
-    RUNNER_QUANTITY,
+    RVOL20_LOOKBACK_BARS,
+    RVOL20_MIN_BARS,
+    TP1_QUANTITY,
     SILVER_EMA_1M_LOOKBACK_BARS,
     SILVER_EMA_1M_MIN_RISE,
     SILVER_G1_MIN_BODY_FRACTION,
+    SAME_SLOT_RVOL_LOOKBACK_SESSIONS,
+    SAME_SLOT_RVOL_MIN_SESSIONS,
     TRIGGER_RANGE_ADDEND,
     TRIGGER_RANGE_MULTIPLIER,
     TRIGGER_RANGE_THRESHOLD,
@@ -39,7 +50,6 @@ from .config import (
     TRIGGER_START,
     TRIGGER_TIGHT_RANGE_MULTIPLIER,
     TRIGGER_TIGHT_RANGE_THRESHOLD,
-    TP1_R_MULTIPLE,
 )
 from .models import Candle, Position, Setup
 
@@ -58,6 +68,8 @@ class ScannerStrategy:
         self.tp1_ever_hit = False
         self.ema20_1m: list[float] = []
         self.ema20_3m: list[float] = []
+        self.recent_3m_volumes: list[float] = []
+        self.same_slot_3m_volumes: dict[int, list[float]] = {}
         self.large_pretrigger_green: Candle | None = None
         self.large_pretrigger_green_range: float | None = None
 
@@ -66,6 +78,8 @@ class ScannerStrategy:
         return self.state == "DONE"
 
     def on_three_minute(self, candle: Candle) -> None:
+        trigger_rvol20, trigger_same_slot_rvol10 = self._volume_ratios(candle)
+        self._record_three_minute_volume(candle)
         self._append_ema(self.ema20_3m, candle.close)
         self._remember_large_pretrigger_green(candle)
         position = self.position
@@ -147,6 +161,8 @@ class ScannerStrategy:
                             trigger_range_fraction=range_fraction,
                             ep_fraction=ep_fraction,
                             r1_target=r1_target,
+                            trigger_rvol20_3m=trigger_rvol20,
+                            trigger_same_slot_rvol10=trigger_same_slot_rvol10,
                             entry_path=(
                                 "LARGE_GREEN_B1"
                                 if self.large_pretrigger_green is not None
@@ -173,6 +189,10 @@ class ScannerStrategy:
                                 "trigger_range_percent": range_fraction * 100,
                                 "ep_percent": ep_fraction * 100,
                                 "r1": r1_target,
+                                "trigger_rvol20_3m": trigger_rvol20,
+                                "trigger_same_slot_rvol10": (
+                                    trigger_same_slot_rvol10
+                                ),
                                 "entry_path": self.setup.entry_path,
                                 "large_green_range_percent": self._percent(
                                     self.setup.large_green_range_fraction
@@ -391,8 +411,13 @@ class ScannerStrategy:
                 self._discard_day(timestamp, price, "NON_POSITIVE_B1_RISK")
                 return None
             self.setup.entry_tier = "B1"
-            target_r_multiple = self._b1_target_r_multiple(
+            golden = self._classify_golden_entry(
                 self.setup.b1_range_fraction
+            )
+            target_r_multiple = (
+                GOLDEN_TP1_R_MULTIPLE
+                if golden
+                else self._b1_target_r_multiple(self.setup.b1_range_fraction)
             )
             self.setup.target_r_multiple = target_r_multiple
             target = price + target_r_multiple * risk
@@ -430,12 +455,21 @@ class ScannerStrategy:
             )
             return None
         self.setup.entry_tier = entry_tier
-        target_r_multiple = self._g1_target_r_multiple(
+        golden = self._classify_golden_entry(
             self.setup.g1_range_fraction
+        )
+        target_r_multiple = (
+            GOLDEN_TP1_R_MULTIPLE
+            if golden
+            else self._g1_target_r_multiple(self.setup.g1_range_fraction)
         )
         self.setup.target_r_multiple = target_r_multiple
         r2_target = price + target_r_multiple * risk
-        target = min(self.setup.r1_target, r2_target)
+        target = (
+            r2_target
+            if golden
+            else min(self.setup.r1_target, r2_target)
+        )
         return self._open_position(
             timestamp,
             price,
@@ -460,6 +494,13 @@ class ScannerStrategy:
         )
         if setup is None or reference is None:
             raise RuntimeError("Entry attempted without a complete setup.")
+        quantity = QUANTITY * (
+            GOLDEN_QUANTITY_MULTIPLIER
+            if setup.entry_quality == "GOLDEN"
+            else 1
+        )
+        tp1_quantity = quantity * TP1_QUANTITY // QUANTITY
+        runner_quantity = quantity - tp1_quantity
         trade_id = f"{timestamp.date().isoformat()}-{self.symbol}-S1"
         self.position = Position(
             trade_id=trade_id,
@@ -470,7 +511,10 @@ class ScannerStrategy:
             initial_sl=initial_sl,
             current_sl=initial_sl,
             tp1_target=target,
-            open_quantity=QUANTITY,
+            quantity=quantity,
+            tp1_quantity=tp1_quantity,
+            runner_quantity=runner_quantity,
+            open_quantity=quantity,
             entry_mode=entry_mode,
             entry_tier=setup.entry_tier or "",
             ema_3m_rise_fraction=setup.ema_3m_rise_fraction,
@@ -490,6 +534,12 @@ class ScannerStrategy:
                 else setup.g1_range_fraction
             ),
             target_r_multiple=setup.target_r_multiple,
+            entry_quality=setup.entry_quality,
+            alpha_entry=setup.alpha_entry,
+            beta_entry=setup.beta_entry,
+            gamma_entry=setup.gamma_entry,
+            trigger_rvol20_3m=setup.trigger_rvol20_3m,
+            trigger_same_slot_rvol10=setup.trigger_same_slot_rvol10,
         )
         self.state = "POSITION"
         setup.outcome = "ENTRY"
@@ -500,7 +550,15 @@ class ScannerStrategy:
             {
                 "trade_id": trade_id,
                 "setup_number": 1,
-                "quantity": QUANTITY,
+                "quantity": quantity,
+                "tp1_quantity": tp1_quantity,
+                "runner_quantity": runner_quantity,
+                "entry_quality": setup.entry_quality,
+                "alpha_entry": setup.alpha_entry,
+                "beta_entry": setup.beta_entry,
+                "gamma_entry": setup.gamma_entry,
+                "trigger_rvol20_3m": setup.trigger_rvol20_3m,
+                "trigger_same_slot_rvol10": setup.trigger_same_slot_rvol10,
                 "entry_mode": entry_mode,
                 "entry_path": setup.entry_path,
                 "entry_tier": setup.entry_tier,
@@ -519,11 +577,15 @@ class ScannerStrategy:
                     self.position.reference_range_fraction
                 ),
                 "target_r_multiple": setup.target_r_multiple,
-                "target_driver": self._target_driver(
-                    entry_mode,
-                    setup.r1_target,
-                    r2_target,
-                    setup.target_r_multiple,
+                "target_driver": (
+                    "GOLDEN_FIXED_1.3R"
+                    if setup.entry_quality == "GOLDEN"
+                    else self._target_driver(
+                        entry_mode,
+                        setup.r1_target,
+                        r2_target,
+                        setup.target_r_multiple,
+                    )
                 ),
                 "g1": setup.g1.details() if setup.g1 is not None else None,
                 "b1": setup.b1.details() if setup.b1 is not None else None,
@@ -554,7 +616,7 @@ class ScannerStrategy:
         position.tp1_booked = True
         position.tp1_exit_time = timestamp
         position.tp1_exit_price = price
-        position.open_quantity = RUNNER_QUANTITY
+        position.open_quantity = position.runner_quantity
         if position.entry_mode == "B1_HIGH_BREAK":
             position.current_sl = max(position.current_sl, position.entry_price)
         elif position.trigger_high is not None:
@@ -678,6 +740,91 @@ class ScannerStrategy:
         if candle.low <= 0:
             return float("inf")
         return (candle.high - candle.low) / candle.low
+
+    def _classify_golden_entry(
+        self,
+        reference_range_fraction: float | None,
+    ) -> bool:
+        setup = self.setup
+        if setup is None:
+            return False
+        alpha = (
+            setup.trigger.start.time() == GOLDEN_TRIGGER_START
+            and reference_range_fraction is not None
+            and reference_range_fraction
+            <= ALPHA_REFERENCE_MAX_RANGE + RANGE_COMPARISON_EPSILON
+        )
+        beta = (
+            alpha
+            and setup.trigger_same_slot_rvol10 is not None
+            and setup.trigger_same_slot_rvol10
+            >= BETA_SAME_SLOT_RVOL10_MIN - RANGE_COMPARISON_EPSILON
+        )
+        gamma = (
+            alpha
+            and setup.trigger_rvol20_3m is not None
+            and setup.trigger_rvol20_3m
+            >= GAMMA_3M_RVOL20_MIN - RANGE_COMPARISON_EPSILON
+        )
+        setup.alpha_entry = alpha
+        setup.beta_entry = beta
+        setup.gamma_entry = gamma
+        setup.entry_quality = "GOLDEN" if (alpha or beta or gamma) else "STANDARD"
+        return setup.entry_quality == "GOLDEN"
+
+    def _volume_ratios(self, candle: Candle) -> tuple[float | None, float | None]:
+        recent = self.recent_3m_volumes[-RVOL20_LOOKBACK_BARS:]
+        rvol20 = (
+            candle.volume / median(recent)
+            if len(recent) >= RVOL20_MIN_BARS and median(recent) > 0
+            else None
+        )
+        slot = self._three_minute_slot(candle)
+        same_slot = self.same_slot_3m_volumes.get(slot, [])[
+            -SAME_SLOT_RVOL_LOOKBACK_SESSIONS:
+        ]
+        same_slot_rvol = (
+            candle.volume / median(same_slot)
+            if len(same_slot) >= SAME_SLOT_RVOL_MIN_SESSIONS
+            and median(same_slot) > 0
+            else None
+        )
+        return rvol20, same_slot_rvol
+
+    def _record_three_minute_volume(self, candle: Candle) -> None:
+        volume = float(candle.volume)
+        self.recent_3m_volumes.append(volume)
+        if len(self.recent_3m_volumes) > RVOL20_LOOKBACK_BARS:
+            del self.recent_3m_volumes[:-RVOL20_LOOKBACK_BARS]
+        slot = self._three_minute_slot(candle)
+        history = self.same_slot_3m_volumes.setdefault(slot, [])
+        history.append(volume)
+        if len(history) > SAME_SLOT_RVOL_LOOKBACK_SESSIONS:
+            del history[:-SAME_SLOT_RVOL_LOOKBACK_SESSIONS]
+
+    def seed_three_minute_volume(
+        self,
+        start: datetime,
+        volume: float,
+    ) -> None:
+        """Warm volume filters without running trigger/setup state."""
+        self.recent_3m_volumes.append(float(volume))
+        if len(self.recent_3m_volumes) > RVOL20_LOOKBACK_BARS:
+            del self.recent_3m_volumes[:-RVOL20_LOOKBACK_BARS]
+        slot = self._three_minute_slot_at(start)
+        history = self.same_slot_3m_volumes.setdefault(slot, [])
+        history.append(float(volume))
+        if len(history) > SAME_SLOT_RVOL_LOOKBACK_SESSIONS:
+            del history[:-SAME_SLOT_RVOL_LOOKBACK_SESSIONS]
+
+    @staticmethod
+    def _three_minute_slot(candle: Candle) -> int:
+        return ScannerStrategy._three_minute_slot_at(candle.start)
+
+    @staticmethod
+    def _three_minute_slot_at(start: datetime) -> int:
+        minute_of_day = start.hour * 60 + start.minute
+        return (minute_of_day - (9 * 60 + 15)) // 3
 
     @staticmethod
     def _b1_target_r_multiple(range_fraction: float | None) -> float:

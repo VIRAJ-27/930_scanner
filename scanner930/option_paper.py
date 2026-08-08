@@ -14,6 +14,7 @@ from .config import (
     OPTION_TP1_FRACTION,
     OPTION_WIDE_STRIKE_MIN_GAP,
     OPTION_WIDE_STRIKE_UPPER_THRESHOLD,
+    QUANTITY,
     TIMEZONE,
 )
 
@@ -226,14 +227,17 @@ class OptionPaperExecutor:
                 instrument,
             )
             return False
-        paper_quantity = float(instrument.lot_size * self.paper_lots)
+        stock_quantity = int(getattr(stock_position, "quantity", QUANTITY))
+        quantity_multiplier = max(1, stock_quantity // QUANTITY)
+        paper_lots = self.paper_lots * quantity_multiplier
+        paper_quantity = float(instrument.lot_size * paper_lots)
         tp1_quantity = paper_quantity * OPTION_TP1_FRACTION
         position = OptionPaperPosition(
             trade_id=stock_position.trade_id,
             underlying=stock_position.symbol,
             entry_tier=stock_position.entry_tier,
             instrument=instrument,
-            paper_lots=self.paper_lots,
+            paper_lots=paper_lots,
             paper_quantity=paper_quantity,
             entry_time=timestamp,
             underlying_entry=stock_position.entry_price,
@@ -252,7 +256,9 @@ class OptionPaperExecutor:
             self._entry_details(position),
         )
         self.notify(
-            f"OPTION PAPER ENTRY | {position.underlying} | {position.entry_tier}\n"
+            f"OPTION PAPER ENTRY | {position.underlying} | "
+            f"{getattr(stock_position, 'entry_quality', 'STANDARD')} | "
+            f"{position.entry_tier}\n"
             f"Underlying entry: \u20b9{stock_position.entry_price:.2f}\n"
             f"Contract: {instrument.trading_symbol}\n"
             f"Paper fill (best ask): \u20b9{quote.ask:.2f}\n"

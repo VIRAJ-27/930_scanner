@@ -9,9 +9,6 @@ from .broker import EquityBroker
 from .candles import CandleAggregator, SessionVwap, floor_time
 from .config import (
     MARKET_EXIT,
-    QUANTITY,
-    RUNNER_QUANTITY,
-    TP1_QUANTITY,
     TIMEZONE,
 )
 from .instruments import EquityCatalog, EquityInstrument
@@ -49,6 +46,11 @@ class StockRuntime:
             today,
         ):
             ScannerStrategy._append_ema(self.strategy.ema20_3m, close)
+        for start, volume in self.store.load_completed_three_minute_volumes(
+            self.symbol,
+            today,
+        ):
+            self.strategy.seed_three_minute_volume(start, volume)
         self.one_minute = CandleAggregator(self.symbol, 1, self._on_one_minute)
         self.three_minute = CandleAggregator(self.symbol, 3, self._on_three_minute)
         self.five_minute = CandleAggregator(self.symbol, 5, self._on_five_minute)
@@ -65,10 +67,17 @@ class StockRuntime:
     def reset_day(self, trading_day) -> None:
         ema20_1m = list(self.strategy.ema20_1m)
         ema20_3m = list(self.strategy.ema20_3m)
+        recent_3m_volumes = list(self.strategy.recent_3m_volumes)
+        same_slot_3m_volumes = {
+            slot: list(values)
+            for slot, values in self.strategy.same_slot_3m_volumes.items()
+        }
         self.trading_day = trading_day
         self.strategy = ScannerStrategy(self.symbol, self._emit)
         self.strategy.ema20_1m = ema20_1m
         self.strategy.ema20_3m = ema20_3m
+        self.strategy.recent_3m_volumes = recent_3m_volumes
+        self.strategy.same_slot_3m_volumes = same_slot_3m_volumes
         self.vwap = SessionVwap()
         self.closed_pnl = 0.0
 
@@ -107,7 +116,7 @@ class StockRuntime:
                         position.trade_id,
                         self.instrument,
                         "BUY",
-                        QUANTITY,
+                        position.quantity,
                         position.entry_mode,
                         price,
                     )
@@ -188,7 +197,7 @@ class StockRuntime:
                     position.trade_id,
                     self.instrument,
                     "SELL",
-                    TP1_QUANTITY,
+                    position.tp1_quantity,
                     reason,
                     price,
                 )
@@ -198,8 +207,8 @@ class StockRuntime:
             price,
             {
                 "trade_id": position.trade_id,
-                "quantity": TP1_QUANTITY,
-                "remaining_quantity": RUNNER_QUANTITY,
+                "quantity": position.tp1_quantity,
+                "remaining_quantity": position.runner_quantity,
                 "runner_sl": position.current_sl,
                 "reason": reason,
             },
@@ -249,7 +258,8 @@ class StockRuntime:
             return
         quantity = position.open_quantity
         tp1_pnl = (
-            (position.tp1_exit_price - position.entry_price) * TP1_QUANTITY
+            (position.tp1_exit_price - position.entry_price)
+            * position.tp1_quantity
             if position.tp1_exit_price is not None
             else 0.0
         )
@@ -366,7 +376,7 @@ class LiveTradingSystem:
             if position.tp1_exit_price is not None:
                 total += (
                     position.tp1_exit_price - position.entry_price
-                ) * TP1_QUANTITY
+                ) * position.tp1_quantity
         return round(total, 2)
 
     def on_tick(self, tick: dict) -> None:

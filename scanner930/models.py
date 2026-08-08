@@ -65,6 +65,12 @@ class Setup:
     g1_range_fraction: float | None = None
     b1_range_fraction: float | None = None
     target_r_multiple: float | None = None
+    trigger_rvol20_3m: float | None = None
+    trigger_same_slot_rvol10: float | None = None
+    alpha_entry: bool = False
+    beta_entry: bool = False
+    gamma_entry: bool = False
+    entry_quality: str = "STANDARD"
     outcome: str = ""
 
 
@@ -78,6 +84,9 @@ class Position:
     initial_sl: float
     current_sl: float
     tp1_target: float | None
+    quantity: int = 100
+    tp1_quantity: int = 70
+    runner_quantity: int = 30
     open_quantity: int = 100
     entry_mode: str = "G1_HIGH_BREAK"
     entry_tier: str = ""
@@ -95,6 +104,12 @@ class Position:
     large_green_range_fraction: float | None = None
     reference_range_fraction: float | None = None
     target_r_multiple: float | None = None
+    entry_quality: str = "STANDARD"
+    alpha_entry: bool = False
+    beta_entry: bool = False
+    gamma_entry: bool = False
+    trigger_rvol20_3m: float | None = None
+    trigger_same_slot_rvol10: float | None = None
     tp1_touched: bool = False
     tp1_touch_time: datetime | None = None
     tp1_minute: datetime | None = None
