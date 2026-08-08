@@ -7,6 +7,12 @@ three-candle G1 search. A strict G1-high break during only the immediately
 following 1-minute candle enters the trade. TP1 is the lower of the Trigger-percentage
 R1 level and the entry-based 3R R2 level.
 
+The Golden quality overlay doubles size for any Alpha/Beta/Gamma-qualified
+entry. Golden uses 200 underlying shares (or two option-paper lot-equivalents),
+books 140 at a fixed 1.3R TP1 without the R1 cap, and trails the remaining 60
+with the existing logic. Standard entries retain the current 100-share dynamic
+target behavior. See `STRATEGY_SPEC.md` for the exact classifications.
+
 See `STRATEGY_SPEC.md` for all confirmed entry, stop, exit and reporting rules.
 
 ## Automated option paper mode

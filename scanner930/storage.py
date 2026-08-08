@@ -10,11 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import DATABASE_FLUSH_SECONDS
-from .config import (
-    QUANTITY,
-    RUNNER_QUANTITY,
-    TP1_QUANTITY,
-)
 
 
 SCHEMA = """
@@ -76,6 +71,12 @@ CREATE TABLE IF NOT EXISTS trades (
     entry_time TEXT NOT NULL,
     entry_price REAL NOT NULL,
     entry_tier TEXT NOT NULL DEFAULT '',
+    entry_quality TEXT NOT NULL DEFAULT 'STANDARD',
+    alpha_entry INTEGER NOT NULL DEFAULT 0,
+    beta_entry INTEGER NOT NULL DEFAULT 0,
+    gamma_entry INTEGER NOT NULL DEFAULT 0,
+    trigger_rvol20_3m REAL,
+    trigger_same_slot_rvol10 REAL,
     quantity INTEGER NOT NULL,
     initial_sl REAL NOT NULL,
     tp1_target REAL NOT NULL,
@@ -255,6 +256,29 @@ class SQLiteStore:
         connection.close()
         return [float(row[0]) for row in reversed(rows)]
 
+    def load_completed_three_minute_volumes(
+        self,
+        symbol: str,
+        before_date: date,
+        limit: int = 2000,
+    ) -> list[tuple[datetime, float]]:
+        """Return prior-session 3m timestamps/volumes for RVOL warm-up."""
+        self.flush()
+        connection = sqlite3.connect(self.path)
+        rows = connection.execute(
+            """
+            SELECT start_ts, volume FROM candles
+            WHERE symbol=? AND timeframe='3m' AND start_ts < ?
+            ORDER BY start_ts DESC LIMIT ?
+            """,
+            (symbol, before_date.isoformat(), int(limit)),
+        ).fetchall()
+        connection.close()
+        return [
+            (datetime.fromisoformat(str(start_ts)), float(volume))
+            for start_ts, volume in reversed(rows)
+        ]
+
     def save_event(
         self,
         timestamp: datetime,
@@ -307,9 +331,11 @@ class SQLiteStore:
             """
             INSERT OR REPLACE INTO trades(
                 trade_id, trading_date, symbol, setup_number, entry_time,
-                entry_price, entry_tier, quantity, initial_sl, tp1_target, tp1_quantity,
+                entry_price, entry_tier, entry_quality, alpha_entry,
+                beta_entry, gamma_entry, trigger_rvol20_3m,
+                trigger_same_slot_rvol10, quantity, initial_sl, tp1_target, tp1_quantity,
                 final_exit_quantity, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 position.trade_id,
@@ -319,11 +345,17 @@ class SQLiteStore:
                 position.entry_time.isoformat(),
                 position.entry_price,
                 position.entry_tier,
-                QUANTITY,
+                position.entry_quality,
+                int(position.alpha_entry),
+                int(position.beta_entry),
+                int(position.gamma_entry),
+                position.trigger_rvol20_3m,
+                position.trigger_same_slot_rvol10,
+                position.quantity,
                 position.initial_sl,
                 position.tp1_target or 0.0,
-                TP1_QUANTITY,
-                RUNNER_QUANTITY,
+                position.tp1_quantity,
+                position.runner_quantity,
                 "OPEN",
             ),
         )
@@ -354,8 +386,10 @@ class SQLiteStore:
         if position.tp1_exit_price is not None:
             tp1_pnl = (
                 position.tp1_exit_price - position.entry_price
-            ) * TP1_QUANTITY
-        final_quantity = RUNNER_QUANTITY if position.tp1_booked else QUANTITY
+            ) * position.tp1_quantity
+        final_quantity = (
+            position.runner_quantity if position.tp1_booked else position.quantity
+        )
         final_pnl = (
             (position.final_exit_price - position.entry_price) * final_quantity
             if position.final_exit_price is not None
@@ -593,6 +627,25 @@ class SQLiteStore:
             "tp2_quantity": (
                 "ALTER TABLE trades ADD COLUMN "
                 "tp2_quantity INTEGER NOT NULL DEFAULT 0"
+            ),
+            "entry_quality": (
+                "ALTER TABLE trades ADD COLUMN "
+                "entry_quality TEXT NOT NULL DEFAULT 'STANDARD'"
+            ),
+            "alpha_entry": (
+                "ALTER TABLE trades ADD COLUMN alpha_entry INTEGER NOT NULL DEFAULT 0"
+            ),
+            "beta_entry": (
+                "ALTER TABLE trades ADD COLUMN beta_entry INTEGER NOT NULL DEFAULT 0"
+            ),
+            "gamma_entry": (
+                "ALTER TABLE trades ADD COLUMN gamma_entry INTEGER NOT NULL DEFAULT 0"
+            ),
+            "trigger_rvol20_3m": (
+                "ALTER TABLE trades ADD COLUMN trigger_rvol20_3m REAL"
+            ),
+            "trigger_same_slot_rvol10": (
+                "ALTER TABLE trades ADD COLUMN trigger_same_slot_rvol10 REAL"
             ),
         }
         for column, statement in migrations.items():

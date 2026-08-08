@@ -169,6 +169,32 @@ class OptionPaperTests(unittest.TestCase):
         self.assertEqual(row[2], "CLOSED")
         self.assertAlmostEqual(row[3], 30.0)
 
+    def test_golden_stock_entry_uses_two_option_lot_equivalents(self):
+        catalog = OptionCatalog([
+            instrument("TEST27AUG26200CE", "200", 200, lot=100),
+        ])
+        executor = OptionPaperExecutor(
+            catalog,
+            FixedQuoteProvider(bid=9.8, ask=10.0, ltp=9.9),
+            self.store,
+        )
+        stock = SimpleNamespace(
+            trade_id="2026-08-03-TEST-GOLDEN",
+            symbol="TEST",
+            entry_tier="SILVER",
+            entry_quality="GOLDEN",
+            quantity=200,
+            entry_price=200.1,
+            initial_sl=198.0,
+            tp1_target=202.83,
+        )
+        timestamp = datetime(2026, 8, 3, 9, 34, 10, tzinfo=IST)
+        self.assertTrue(executor.open_position(timestamp, stock))
+        position = executor.positions[stock.trade_id]
+        self.assertEqual(position.paper_lots, 2)
+        self.assertEqual(position.paper_quantity, 200)
+        self.assertEqual(position.tp1_quantity, 140)
+
     def test_wide_spread_rejects_option_entry(self):
         catalog = OptionCatalog([
             instrument("TEST27AUG26200CE", "200", 200),

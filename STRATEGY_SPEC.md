@@ -107,6 +107,41 @@ Levels:
 If entry itself is already at or above TP1, TP1 is considered touched and the
 70-share partial exit occurs at that entry minute's close.
 
+## Golden entry overlay
+
+Every otherwise-valid G1 or B1 entry is also classified using the completed
+Trigger and reference candle. The reference is G1 for Normal/Silver and B1 for
+the large-green route.
+
+- **Alpha**: Trigger starts exactly at 09:33 and reference range is no greater
+  than 0.20%, where range is `(High - Low) / Low`.
+- **Beta**: Alpha is true and Trigger same-slot RVOL10 is at least 0.575.
+  Same-slot RVOL10 is Trigger volume divided by the median volume of the same
+  3-minute time slot over the previous 10 available sessions, with at least
+  three prior observations.
+- **Gamma**: Alpha is true and Trigger 3-minute RVOL20 is at least 0.57.
+  RVOL20 is Trigger volume divided by the median volume of the previous 20
+  completed 3-minute candles, with at least five prior candles.
+
+If Alpha, Beta or Gamma is true, classify the trade as **Golden**. Because Beta
+and Gamma include Alpha, every Beta/Gamma trade is also Alpha; the individual
+flags are retained for reporting. A Golden entry:
+
+- uses 200 shares, with 140 at TP1 and 60 as the runner;
+- uses a fixed TP1 at 1.3R from entry and initial stop;
+- ignores the Trigger-percentage R1 cap; and
+- otherwise keeps the existing stop upgrades, 1-minute TP close execution and
+  5-minute trailing logic.
+
+All other valid entries remain **Standard**: 100 shares, 70/30 split and the
+existing route-specific dynamic TP1 rules.
+
+Option paper execution mirrors the quality sizing: one configured lot-equivalent
+for Standard and two for Golden. Local database history warms the two RVOL
+metrics when available. Alpha still classifies correctly when a fresh runner has
+insufficient historical volume; Beta/Gamma remain false until their minimum
+history requirements are met.
+
 ## Stops and exits
 
 - Standard G1 initial stop: Trigger low.
@@ -114,7 +149,8 @@ If entry itself is already at or above TP1, TP1 is considered touched and the
 - After entry, the first completed 3-minute candle that closes strictly above
   Trigger high moves a standard G1 stop to G1 low. This step does not change
   the large-green B1 stop. A stop can never move down.
-- When a 1-minute candle touches TP1, sell 70 shares at that candle's close.
+- When a 1-minute candle touches TP1, sell the configured TP1 quantity at that
+  candle's close: 70 Standard or 140 Golden.
 - After TP1, move a standard G1 runner stop to Trigger high and a B1 runner
   stop to breakeven (entry price).
 - Subsequently, every completed 5-minute candle low can raise the runner stop.

@@ -14,7 +14,11 @@ from .config import STRATEGY_NAME
 
 QUERIES = {
     "OptionTradeBook": """
-        SELECT trade_id, trading_date, symbol, entry_tier, option_symbol,
+        SELECT trade_id, trading_date, symbol, entry_tier,
+               COALESCE((SELECT entry_quality FROM trades t
+                         WHERE t.trade_id=option_paper_trades.trade_id), 'STANDARD')
+                   AS entry_quality,
+               option_symbol,
                expiry, strike, lot_size, paper_lots, paper_quantity,
                entry_time, underlying_entry_price, underlying_initial_sl,
                underlying_tp1_target, entry_quote_time, entry_option_ltp,
@@ -30,7 +34,9 @@ QUERIES = {
     """,
     "TradeBook": """
         SELECT trade_id, trading_date, symbol, setup_number, entry_time,
-               entry_price, entry_tier, quantity, initial_sl, tp1_target, tp1_touch_time,
+               entry_price, entry_tier, entry_quality, alpha_entry,
+               beta_entry, gamma_entry, trigger_rvol20_3m,
+               trigger_same_slot_rvol10, quantity, initial_sl, tp1_target, tp1_touch_time,
                tp1_exit_time, tp1_exit_price, tp1_quantity,
                final_exit_time, final_exit_price, final_exit_quantity,
                final_exit_reason, realized_pnl, status

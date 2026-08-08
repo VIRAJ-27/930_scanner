@@ -69,6 +69,27 @@ class StrategyRuleTests(unittest.TestCase):
     def add_g1(self, hhmm="09:33", high=100.5, low=100.1, close=100.45):
         self.strategy.on_one_minute(c1(hhmm, 100.2, high, low, close))
 
+    def valid_0933_trigger(self, seed_volume=False):
+        if seed_volume:
+            for day in ["2026-07-27", "2026-07-28", "2026-07-29"]:
+                start = datetime.fromisoformat(f"{day}T09:33:00").replace(tzinfo=IST)
+                self.strategy.seed_three_minute_volume(start, 100)
+            for minute in range(20):
+                start = datetime.fromisoformat("2026-07-31T14:00:00").replace(
+                    tzinfo=IST
+                )
+                self.strategy.seed_three_minute_volume(start, 100)
+        self.strategy.on_three_minute(c3("09:21", 99.2, 99.7, 99.2, 99.6))
+        self.strategy.on_three_minute(c3("09:24", 99.6, 100.0, 99.5, 99.9))
+        self.strategy.on_three_minute(c3("09:27", 99.9, 100.3, 99.8, 100.2))
+        self.strategy.on_three_minute(c3("09:30", 100.0, 100.5, 99.9, 100.35))
+        self.strategy.on_three_minute(c3("09:33", 100.3, 100.4, 100.0, 100.2))
+
+    def open_golden_g1(self, seed_volume=False):
+        self.valid_0933_trigger(seed_volume=seed_volume)
+        self.add_g1("09:36", high=100.50, low=100.31, close=100.48)
+        return self.strategy.on_entry_tick(moment("09:37:10"), 100.51)
+
     def test_trigger_below_half_percent_multiplies_range_by_1_4(self):
         self.valid_trigger(100.4, 100.0)
         setup = self.strategy.setup
@@ -195,6 +216,50 @@ class StrategyRuleTests(unittest.TestCase):
         self.assertAlmostEqual(
             position.tp1_target, min(self.strategy.setup.r1_target, expected_r2)
         )
+
+    def test_alpha_entry_becomes_golden_with_double_quantity_and_fixed_1_3r(self):
+        position = self.open_golden_g1()
+        self.assertIsNotNone(position)
+        self.assertEqual(position.entry_quality, "GOLDEN")
+        self.assertTrue(position.alpha_entry)
+        self.assertFalse(position.beta_entry)
+        self.assertFalse(position.gamma_entry)
+        self.assertEqual(position.quantity, 200)
+        self.assertEqual(position.tp1_quantity, 140)
+        self.assertEqual(position.runner_quantity, 60)
+        expected = position.entry_price + 1.3 * (
+            position.entry_price - position.initial_sl
+        )
+        self.assertAlmostEqual(position.tp1_target, expected)
+        self.assertAlmostEqual(position.r2_target, expected)
+
+    def test_seeded_volume_sets_beta_and_gamma_but_uses_same_golden_treatment(self):
+        position = self.open_golden_g1(seed_volume=True)
+        self.assertTrue(position.alpha_entry)
+        self.assertTrue(position.beta_entry)
+        self.assertTrue(position.gamma_entry)
+        self.assertEqual(position.entry_quality, "GOLDEN")
+        self.assertEqual(position.quantity, 200)
+        self.assertGreaterEqual(position.trigger_same_slot_rvol10, 0.575)
+        self.assertGreaterEqual(position.trigger_rvol20_3m, 0.57)
+
+    def test_0930_entry_remains_standard_with_current_quantity_and_target(self):
+        self.valid_trigger()
+        self.add_g1()
+        position = self.strategy.on_entry_tick(moment("09:34:10"), 100.51)
+        self.assertEqual(position.entry_quality, "STANDARD")
+        self.assertEqual(position.quantity, 100)
+        self.assertEqual(position.tp1_quantity, 70)
+        self.assertEqual(position.runner_quantity, 30)
+        self.assertAlmostEqual(
+            position.tp1_target,
+            min(position.r1_target, position.r2_target),
+        )
+
+    def test_golden_tp1_leaves_sixty_share_runner(self):
+        position = self.open_golden_g1()
+        self.strategy.mark_tp1_booked(moment("09:45:00"), position.tp1_target)
+        self.assertEqual(position.open_quantity, 60)
 
     def test_three_minute_close_above_trigger_moves_sl_to_g1_low(self):
         self.valid_trigger()

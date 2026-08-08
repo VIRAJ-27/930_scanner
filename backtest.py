@@ -8,7 +8,6 @@ from typing import Any
 
 import pandas as pd
 
-from scanner930.config import QUANTITY, RUNNER_QUANTITY, TP1_QUANTITY
 from scanner930.models import Candle
 from scanner930.strategy import ScannerStrategy
 
@@ -134,6 +133,8 @@ def backtest_day(
     five_frame: pd.DataFrame | None = None,
     ema20_1m_history: list[float] | None = None,
     ema20_3m_history: list[float] | None = None,
+    recent_3m_volumes: list[float] | None = None,
+    same_slot_3m_volumes: dict[int, list[float]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     events = []
 
@@ -155,10 +156,19 @@ def backtest_day(
     strategy = ScannerStrategy(symbol, emit)
     initial_ema20_1m = list(ema20_1m_history or [])
     initial_ema20_3m = list(ema20_3m_history or [])
+    initial_recent_3m_volumes = list(recent_3m_volumes or [])
+    initial_same_slot_3m_volumes = {
+        slot: list(values)
+        for slot, values in (same_slot_3m_volumes or {}).items()
+    }
     if ema20_1m_history is not None:
         strategy.ema20_1m = ema20_1m_history
     if ema20_3m_history is not None:
         strategy.ema20_3m = ema20_3m_history
+    if recent_3m_volumes is not None:
+        strategy.recent_3m_volumes = recent_3m_volumes
+    if same_slot_3m_volumes is not None:
+        strategy.same_slot_3m_volumes = same_slot_3m_volumes
     three = three_frame if three_frame is not None else make_timeframe(minute_frame, 3)
     five = five_frame if five_frame is not None else make_timeframe(minute_frame, 5)
     three_by_end = {
@@ -356,6 +366,21 @@ def backtest_day(
         ema20_3m_history.extend(initial_ema20_3m)
         for close in three["Close"]:
             ScannerStrategy._append_ema(ema20_3m_history, float(close))
+    if recent_3m_volumes is not None and same_slot_3m_volumes is not None:
+        recent_3m_volumes.clear()
+        recent_3m_volumes.extend(initial_recent_3m_volumes)
+        same_slot_3m_volumes.clear()
+        same_slot_3m_volumes.update(
+            {
+                slot: list(values)
+                for slot, values in initial_same_slot_3m_volumes.items()
+            }
+        )
+        for row in three.itertuples(index=False):
+            strategy.seed_three_minute_volume(
+                row.Datetime.to_pydatetime(),
+                float(row.Volume),
+            )
     return trades, events
 
 
@@ -371,9 +396,9 @@ def book_tp1(strategy, active, touch_time, exit_time, close_price):
     active["TP1TouchTime"] = iso(position.tp1_touch_time)
     active["TP1ExitTime"] = iso(exit_time)
     active["TP1ExitPrice"] = close_price
-    active["TP1Quantity"] = TP1_QUANTITY
+    active["TP1Quantity"] = position.tp1_quantity
     active["TP1ExecutionRule"] = "TARGET_TOUCH_1M_CLOSE"
-    active["FinalQuantity"] = RUNNER_QUANTITY
+    active["FinalQuantity"] = position.runner_quantity
 
 
 def new_trade_record(trading_day, position, trigger, reference, setup, entry_minute):
@@ -391,6 +416,12 @@ def new_trade_record(trading_day, position, trigger, reference, setup, entry_min
         "SetupNumber": 1,
         "EntryMode": position.entry_mode,
         "EntryTier": position.entry_tier,
+        "EntryQuality": position.entry_quality,
+        "AlphaEntry": position.alpha_entry,
+        "BetaEntry": position.beta_entry,
+        "GammaEntry": position.gamma_entry,
+        "TriggerRVOL20_3m": position.trigger_rvol20_3m,
+        "TriggerSameSlotRVOL10": position.trigger_same_slot_rvol10,
         "EntryPath": setup.entry_path,
         "ReferenceType": reference_type,
         "EMA3mRisePercent": (
@@ -426,7 +457,7 @@ def new_trade_record(trading_day, position, trigger, reference, setup, entry_min
         "EntryMinute": iso(entry_minute),
         "EntryTime": iso(position.entry_time),
         "EntryPrice": position.entry_price,
-        "Quantity": QUANTITY,
+        "Quantity": position.quantity,
         "InitialSL": position.initial_sl,
         "G1Low": setup.g1.low if setup.g1 is not None else None,
         "B1ConfirmationEnd": iso(position.b1_confirmation_end),
@@ -443,11 +474,15 @@ def new_trade_record(trading_day, position, trigger, reference, setup, entry_min
         "TargetRMultiple": position.target_r_multiple,
         "R2Target": position.r2_target,
         "TP1Target": position.tp1_target,
-        "TargetDriver": ScannerStrategy._target_driver(
-            position.entry_mode,
-            position.r1_target,
-            position.r2_target,
-            position.target_r_multiple,
+        "TargetDriver": (
+            "GOLDEN_FIXED_1.3R"
+            if position.entry_quality == "GOLDEN"
+            else ScannerStrategy._target_driver(
+                position.entry_mode,
+                position.r1_target,
+                position.r2_target,
+                position.target_r_multiple,
+            )
         ),
         "TP1TouchTime": "",
         "TP1ExitTime": "",
@@ -456,7 +491,7 @@ def new_trade_record(trading_day, position, trigger, reference, setup, entry_min
         "TP1ExecutionRule": "",
         "FinalExitTime": "",
         "FinalExitPrice": None,
-        "FinalQuantity": QUANTITY,
+        "FinalQuantity": position.quantity,
         "ExitReason": "",
         "TP1PnL": None,
         "RunnerPnL": None,
@@ -474,13 +509,15 @@ def finalize_record(record, position):
     result = dict(record)
     result["FinalExitTime"] = iso(position.final_exit_time)
     result["FinalExitPrice"] = position.final_exit_price
-    final_quantity = RUNNER_QUANTITY if position.tp1_booked else QUANTITY
+    final_quantity = (
+        position.runner_quantity if position.tp1_booked else position.quantity
+    )
     result["FinalQuantity"] = final_quantity
     result["ExitReason"] = position.final_exit_reason
     if position.entry_mode == "B1_HIGH_BREAK":
         result["B1CloseConfirmed"] = position.b1_close_confirmed
     tp1_pnl = (
-        (position.tp1_exit_price - position.entry_price) * TP1_QUANTITY
+        (position.tp1_exit_price - position.entry_price) * position.tp1_quantity
         if position.tp1_exit_price is not None
         else 0.0
     )
@@ -492,12 +529,12 @@ def finalize_record(record, position):
     final_pnl = (
         runner_pnl
         if position.tp1_booked
-        else (position.final_exit_price - position.entry_price) * QUANTITY
+        else (position.final_exit_price - position.entry_price) * position.quantity
     )
     result["TP1PnL"] = round(tp1_pnl, 2)
     result["RunnerPnL"] = round(runner_pnl, 2)
     result["GrossPnL"] = round(tp1_pnl + final_pnl, 2)
-    initial_risk = float(result["RiskPerShare"]) * QUANTITY
+    initial_risk = float(result["RiskPerShare"]) * position.quantity
     net_rr = result["GrossPnL"] / initial_risk if initial_risk > 0 else None
     result["NetRR"] = round(net_rr, 4) if net_rr is not None else None
     result["RMultiple"] = result["NetRR"]
@@ -599,6 +636,8 @@ def main():
             five_groups = {d: g.copy() for d, g in five_all.groupby(five_all["Datetime"].dt.date)}
             ema20_1m_history: list[float] = []
             ema20_3m_history: list[float] = []
+            recent_3m_volumes: list[float] = []
+            same_slot_3m_volumes: dict[int, list[float]] = {}
             for close in minute_all.loc[
                 minute_all["Datetime"] < start,
                 "Close",
@@ -609,6 +648,21 @@ def main():
                 "Close",
             ]:
                 ScannerStrategy._append_ema(ema20_3m_history, float(close))
+            volume_seed = ScannerStrategy(symbol, lambda *_args, **_kwargs: None)
+            for row in three_with_history.loc[
+                three_with_history["Completion"] <= start
+            ].itertuples(index=False):
+                volume_seed.seed_three_minute_volume(
+                    row.Datetime.to_pydatetime(),
+                    float(row.Volume),
+                )
+            recent_3m_volumes.extend(volume_seed.recent_3m_volumes)
+            same_slot_3m_volumes.update(
+                {
+                    slot: list(values)
+                    for slot, values in volume_seed.same_slot_3m_volumes.items()
+                }
+            )
             symbol_trades, symbol_events = [], []
             for trading_day, day_frame in minute.groupby(minute["Datetime"].dt.date):
                 day_frame = day_frame[
@@ -623,6 +677,8 @@ def main():
                     five_groups.get(trading_day),
                     ema20_1m_history,
                     ema20_3m_history,
+                    recent_3m_volumes,
+                    same_slot_3m_volumes,
                 )
                 symbol_trades.extend(trades)
                 symbol_events.extend(events)
