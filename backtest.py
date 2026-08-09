@@ -443,6 +443,7 @@ def new_trade_record(trading_day, position, trigger, reference, setup, entry_min
         "TriggerRangePercent": setup.trigger_range_fraction * 100,
         "EPPercent": setup.ep_fraction * 100,
         "R1Target": position.r1_target,
+        "S3Target": position.s3_target,
         "LargeGreenRangePercent": (
             None
             if setup.large_green_range_fraction is None
@@ -482,6 +483,7 @@ def new_trade_record(trading_day, position, trigger, reference, setup, entry_min
                 position.r1_target,
                 position.r2_target,
                 position.target_r_multiple,
+                position.s3_target,
             )
         ),
         "TP1TouchTime": "",

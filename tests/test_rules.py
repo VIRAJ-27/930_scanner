@@ -207,15 +207,26 @@ class StrategyRuleTests(unittest.TestCase):
         self.assertIsNone(position)
         self.assertEqual(self.strategy.state, "DONE")
 
-    def test_target_is_minimum_of_r1_and_range_based_r2(self):
+    def test_standard_target_is_minimum_of_r1_r2_with_s3_floor(self):
         self.valid_trigger()
         self.add_g1()
         position = self.strategy.on_entry_tick(moment("09:34:10"), 100.51)
         expected_r2 = 100.51 + 1.5 * (100.51 - 100.0)
         self.assertAlmostEqual(position.r2_target, expected_r2)
+        expected_s3 = self.strategy.setup.trigger.high * 1.0033
+        self.assertAlmostEqual(position.s3_target, expected_s3)
         self.assertAlmostEqual(
-            position.tp1_target, min(self.strategy.setup.r1_target, expected_r2)
+            position.tp1_target,
+            max(min(self.strategy.setup.r1_target, expected_r2), expected_s3),
         )
+
+    def test_s3_sets_point_three_three_percent_floor_from_trigger_high(self):
+        self.valid_trigger(high=100.15, low=100.0)
+        self.add_g1(high=100.25, low=100.1, close=100.23)
+        position = self.strategy.on_entry_tick(moment("09:34:10"), 100.26)
+        expected_s3 = 100.15 * 1.0033
+        self.assertLess(min(position.r1_target, position.r2_target), expected_s3)
+        self.assertAlmostEqual(position.tp1_target, expected_s3)
 
     def test_alpha_entry_becomes_golden_with_double_quantity_and_fixed_1_3r(self):
         position = self.open_golden_g1()
@@ -253,7 +264,10 @@ class StrategyRuleTests(unittest.TestCase):
         self.assertEqual(position.runner_quantity, 30)
         self.assertAlmostEqual(
             position.tp1_target,
-            min(position.r1_target, position.r2_target),
+            max(
+                min(position.r1_target, position.r2_target),
+                position.s3_target,
+            ),
         )
 
     def test_golden_tp1_leaves_sixty_share_runner(self):

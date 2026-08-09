@@ -43,6 +43,7 @@ from .config import (
     SILVER_G1_MIN_BODY_FRACTION,
     SAME_SLOT_RVOL_LOOKBACK_SESSIONS,
     SAME_SLOT_RVOL_MIN_SESSIONS,
+    STANDARD_TP1_TRIGGER_HIGH_FLOOR_FRACTION,
     TRIGGER_RANGE_ADDEND,
     TRIGGER_RANGE_MULTIPLIER,
     TRIGGER_RANGE_THRESHOLD,
@@ -465,10 +466,13 @@ class ScannerStrategy:
         )
         self.setup.target_r_multiple = target_r_multiple
         r2_target = price + target_r_multiple * risk
+        s3_target = self.setup.trigger.high * (
+            1.0 + STANDARD_TP1_TRIGGER_HIGH_FLOOR_FRACTION
+        )
         target = (
             r2_target
             if golden
-            else min(self.setup.r1_target, r2_target)
+            else max(min(self.setup.r1_target, r2_target), s3_target)
         )
         return self._open_position(
             timestamp,
@@ -477,6 +481,7 @@ class ScannerStrategy:
             target,
             initial_sl=self.setup.trigger.low,
             entry_mode="G1_HIGH_BREAK",
+            s3_target=None if golden else s3_target,
         )
 
     def _open_position(
@@ -487,6 +492,7 @@ class ScannerStrategy:
         target: float,
         initial_sl: float,
         entry_mode: str,
+        s3_target: float | None = None,
     ) -> Position:
         setup = self.setup
         reference = setup.b1 if setup and entry_mode == "B1_HIGH_BREAK" else (
@@ -524,6 +530,7 @@ class ScannerStrategy:
             trigger_high=setup.trigger.high,
             r1_target=setup.r1_target,
             r2_target=r2_target,
+            s3_target=s3_target,
             b1_high=setup.b1.high if setup.b1 is not None else None,
             b1_low=setup.b1.low if setup.b1 is not None else None,
             b1_confirmation_end=setup.b1_confirmation_end,
@@ -572,6 +579,7 @@ class ScannerStrategy:
                 "sl": initial_sl,
                 "r1": setup.r1_target,
                 "r2": r2_target,
+                "s3": s3_target,
                 "tp1": target,
                 "reference_range_percent": self._percent(
                     self.position.reference_range_fraction
@@ -585,6 +593,7 @@ class ScannerStrategy:
                         setup.r1_target,
                         r2_target,
                         setup.target_r_multiple,
+                        s3_target,
                     )
                 ),
                 "g1": setup.g1.details() if setup.g1 is not None else None,
@@ -864,11 +873,19 @@ class ScannerStrategy:
         r1_target: float | None,
         r2_target: float,
         target_r_multiple: float | None,
+        s3_target: float | None = None,
     ) -> str:
         multiple = target_r_multiple or 0.0
         r2_label = f"R2_{multiple:g}R"
         if entry_mode == "B1_HIGH_BREAK":
             return r2_label
+        uncapped_target = (
+            min(r1_target, r2_target)
+            if r1_target is not None
+            else r2_target
+        )
+        if s3_target is not None and uncapped_target < s3_target:
+            return "S3_TRIGGER_HIGH_PLUS_0.33_PERCENT_FLOOR"
         return "R1" if r1_target is not None and r1_target <= r2_target else r2_label
 
     def _classify_entry(self) -> tuple[str | None, dict]:
