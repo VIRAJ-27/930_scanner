@@ -102,7 +102,10 @@ Levels:
 - `R1 = Trigger High × (1 + EP% / 100)`;
 - for Normal/Silver, G1 range below 0.08% makes R2 equal 5R; from 0.08%
   through 0.30% makes R2 equal 1.3R; above 0.30% makes R2 equal 1.5R;
-- `TP1 = minimum(R1, R2)`.
+- `S3 = Trigger High × 1.0033`;
+- for Standard Normal/Silver entries, `TP1 = maximum(minimum(R1, R2), S3)`.
+  S3 is a floor: TP1 can never be below 0.33% above Trigger high.
+- Golden and B1 target rules remain unchanged and do not use the S3 floor.
 
 If entry itself is already at or above TP1, TP1 is considered touched and the
 70-share partial exit occurs at that entry minute's close.

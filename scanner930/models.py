@@ -97,6 +97,7 @@ class Position:
     trigger_high: float | None = None
     r1_target: float | None = None
     r2_target: float | None = None
+    s3_target: float | None = None
     b1_high: float | None = None
     b1_low: float | None = None
     b1_confirmation_end: datetime | None = None
