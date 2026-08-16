@@ -1,0 +1,1 @@
+Expected raw data format: one CSV per symbol, filename ending _1m.csv; columns Datetime, Open, High, Low, Close, Volume. The uploaded archive matches this format and contains 210 symbols.
