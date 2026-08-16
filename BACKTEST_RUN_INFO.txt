@@ -1,0 +1,1 @@
+2nd-candel-entry branch: external 1-minute data is required for the backtest. Uploaded dataset contains 210 symbol files and is limited to 2026-07-14 through 2026-07-24.
