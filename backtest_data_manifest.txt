@@ -1,0 +1,1 @@
+Supplied dataset: 210 *_1m.csv files. Coverage checked from the uploaded archive: 2026-07-14 through 2026-07-24. Raw data is not committed to the repository.
