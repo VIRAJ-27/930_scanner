@@ -1,0 +1,1 @@
+External dataset ready for local backtest. 210 *_1m.csv files, 2026-07-14 through 2026-07-24.
