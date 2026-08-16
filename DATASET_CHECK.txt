@@ -1,0 +1,1 @@
+Verified supplied archive locally before backtest: 210 one-minute symbol files; OHLCV schema validated; coverage 2026-07-14 to 2026-07-24.
