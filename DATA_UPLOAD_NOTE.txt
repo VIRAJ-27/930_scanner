@@ -1,0 +1,1 @@
+Historical 1-minute OHLCV data uploaded separately for local backtesting. This repository intentionally does not include raw market data.
