@@ -1,0 +1,1 @@
+Supplied raw data archive verified locally: 210 *_1m.csv files, each with Datetime/Open/High/Low/Close/Volume. Dataset coverage begins 2026-07-14 and ends 2026-07-24.
