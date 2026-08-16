@@ -1,0 +1,1 @@
+The 1-minute historical data used for the 2nd-candel-entry backtest is supplied outside GitHub. Expected files are one CSV per symbol named *_1m.csv with columns Datetime, Open, High, Low, Close, Volume. The supplied dataset currently covers 2026-07-14 through 2026-07-24.
