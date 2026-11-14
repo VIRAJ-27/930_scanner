@@ -1,8 +1,10 @@
-# Free GitHub Actions option-paper runner
+# SOT SETUP live signal runner
 
-This runner is intentionally paper-only. It starts at 09:15 IST every weekday,
-uses the Angel One WebSocket for underlying-stock ticks, and force-closes every
-remaining position at 11:00 IST with `TIME_EXIT_11_00` in the trade report.
+The scheduled workflow starts at 09:15 IST every weekday and monitors SOT SETUP
+through 12:18 IST. It fetches completed Angel One candles and sends Telegram
+alerts for valid setups and entry breaks. It is signal-only and never places
+orders. Daily CSV/JSON reports are sent through the configured notification
+channels and uploaded as a GitHub Actions artifact.
 
 ## Requirements
 
@@ -42,22 +44,20 @@ because writers can modify a workflow that uses repository secrets.
 After the workflow is merged into the default branch:
 
 1. Open **Actions** in the GitHub repository.
-2. Select **Option paper scanner**.
+2. Select **SOT SETUP live signals**.
 3. Select **Run workflow**, keep the default branch selected, and confirm.
 4. Open the job and watch the setup/login messages. Credentials and tokens are
    suppressed.
-5. Stop the test if it is outside market hours. A normal weekday run stops by
-   itself at 11:00 IST.
+5. A normal weekday run monitors through 12:18 IST. A manual run after that
+   time creates the day's report without sending old setup or entry alerts.
 
 ## Daily schedule and outputs
 
 GitHub schedules the job at `03:45 UTC`, equal to `09:15 IST`, Monday-Friday.
-At completion it sends configured Telegram/email reports and uploads a private
-workflow artifact containing `LiveReports` and the SQLite audit database. Open
-the workflow run's **Artifacts** section to download it. Artifacts are retained
-for 30 days.
+At completion it sends configured Telegram/email reports and uploads the daily
+SOT report folder and generated universe file. Open the workflow run's
+**Artifacts** section to download it. Artifacts are retained for 30 days.
 
-An NSE holiday still starts a job, but there should be no market trades. GitHub
-scheduled jobs can occasionally start late. This is acceptable for observation
-and paper testing, but the workflow must never be treated as live-order
-infrastructure.
+An NSE holiday still starts a job, but there should be no signals. GitHub
+scheduled jobs can occasionally start late; setup/entry alerts may therefore
+arrive after a candle has formed. Check the candle and entry times before acting.

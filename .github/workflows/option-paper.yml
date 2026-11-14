@@ -1,8 +1,8 @@
-name: Option paper scanner
+name: SOT SETUP live signals
 
 on:
   schedule:
-    # 03:45 UTC is 09:15 Asia/Kolkata. The buffer absorbs runner delays.
+    # GitHub Actions uses UTC: 03:45 UTC is 09:15 Asia/Kolkata, Monday-Friday.
     - cron: "45 3 * * 1-5"
   workflow_dispatch:
 
@@ -10,13 +10,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: option-paper-scanner
+  group: sot-live-signal-scanner
   cancel-in-progress: false
 
 jobs:
-  paper-trade:
+  signal-monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 130
+    timeout-minutes: 200
     env:
       TZ: Asia/Kolkata
       API_KEY: ${{ secrets.API_KEY }}
@@ -25,7 +25,6 @@ jobs:
       TOTP_SECRET: ${{ secrets.TOTP_SECRET }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      OPTION_PAPER_LOTS: "1"
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
       SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -57,21 +56,25 @@ jobs:
           done
           exit "$missing"
 
-      - name: Close positions at 11:00 and report at 11:15 IST
-        run: >-
-          python run_scanner.py --option-paper
-          --force-exit-at 11:00
-          --force-exit-reason TIME_EXIT_11_00
-          --stop-at 11:15
-          --stop-reason REPORT_COMPLETE_11_15
+      - name: Build current F&O stock universe
+        run: python export_sot_universe.py
 
-      - name: Preserve daily reports
+      - name: Monitor SOT SETUP and send signal alerts
+        run: >-
+          python monitor_sot_live.py
+          --universe-csv LiveData/SOT_FO_Universe.csv
+          --output SOT_LiveReports
+          --cycle-seconds 180
+          --history-days 7
+
+      - name: Preserve daily SOT reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: option-paper-${{ github.run_id }}
+          name: sot-live-${{ github.run_id }}
           path: |
-            LiveReports/
-            LiveData/scanner930.db
+            SOT_LiveReports/
+            LiveData/SOT_FO_Universe.csv
           if-no-files-found: warn
           retention-days: 30
+
