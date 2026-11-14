@@ -4,5 +4,6 @@ __pycache__/
 *.py[cod]
 LiveData/
 LiveReports/
+SOT_LiveReports/
 LIVE_APPROVAL.txt
 logs/
